@@ -9,6 +9,8 @@ Note: For Wayland support, add yourself to the 'input' group:
 Then log out and back in.
 """
 
+__version__ = "1.0.0"
+
 import sys
 import json
 import os

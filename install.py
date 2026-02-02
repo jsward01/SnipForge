@@ -19,7 +19,13 @@ import sys
 import shutil
 import subprocess
 import argparse
+import json
+import re
+import tarfile
+from datetime import datetime
 from pathlib import Path
+from urllib.request import urlopen
+from urllib.error import URLError
 
 
 # ============================================================================
@@ -30,13 +36,17 @@ APP_NAME = "snipforge"
 APP_DISPLAY_NAME = "SnipForge"
 APP_DESCRIPTION = "Forge your snippets - Quick text expansion tool"
 APP_VERSION = "1.0.0"
+GITHUB_REPO = "jsward01/SnipForge"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 # Global flags (set by argument parser)
-AUTO_YES = False  # --yes flag for non-interactive mode
+AUTO_YES = False   # --yes flag for non-interactive mode
+VERBOSE = False    # --verbose flag for detailed output
 
 # Installation paths
 INSTALL_DIR = Path.home() / ".local" / "share" / APP_NAME
 CONFIG_DIR = Path.home() / ".config" / APP_NAME
+BACKUP_DIR = INSTALL_DIR / "backups"
 DESKTOP_FILE = Path.home() / ".local" / "share" / "applications" / f"{APP_NAME}.desktop"
 AUTOSTART_FILE = Path.home() / ".config" / "autostart" / f"{APP_NAME}.desktop"
 SYSTEMD_SERVICE = Path.home() / ".config" / "systemd" / "user" / f"{APP_NAME}.service"
@@ -100,6 +110,13 @@ def print_error(text):
 def print_info(text):
     """Print an info message."""
     print(f"{Colors.CYAN}ℹ{Colors.RESET} {text}")
+
+
+def print_verbose(text):
+    """Print a message only in verbose mode."""
+    global VERBOSE
+    if VERBOSE:
+        print(f"{Colors.MAGENTA}  →{Colors.RESET} {text}")
 
 
 def prompt_yes_no(prompt, default=True):
@@ -384,7 +401,10 @@ def create_directories():
     ]
 
     for dir_path in directories:
+        created = not dir_path.exists()
         dir_path.mkdir(parents=True, exist_ok=True)
+        if created:
+            print_verbose(f"Created {dir_path}")
 
     print_success("Directories created")
 
@@ -397,22 +417,33 @@ def install_files():
     main_dest = INSTALL_DIR / "snipforge.py"
     shutil.copy2(SOURCE_FILES["main"], main_dest)
     main_dest.chmod(0o755)
+    print_verbose(f"Copied {SOURCE_FILES['main']} → {main_dest}")
 
     # Copy icons to config directory
     if SOURCE_FILES["icon_png"].exists():
-        shutil.copy2(SOURCE_FILES["icon_png"], CONFIG_DIR / "app_icon.png")
+        dest = CONFIG_DIR / "app_icon.png"
+        shutil.copy2(SOURCE_FILES["icon_png"], dest)
+        print_verbose(f"Copied {SOURCE_FILES['icon_png'].name} → {dest}")
 
     if SOURCE_FILES["icon_ico"].exists():
-        shutil.copy2(SOURCE_FILES["icon_ico"], CONFIG_DIR / "app_icon.ico")
+        dest = CONFIG_DIR / "app_icon.ico"
+        shutil.copy2(SOURCE_FILES["icon_ico"], dest)
+        print_verbose(f"Copied {SOURCE_FILES['icon_ico'].name} → {dest}")
 
     if SOURCE_FILES["tray_ico"].exists():
-        shutil.copy2(SOURCE_FILES["tray_ico"], CONFIG_DIR / "tray_icon.ico")
+        dest = CONFIG_DIR / "tray_icon.ico"
+        shutil.copy2(SOURCE_FILES["tray_ico"], dest)
+        print_verbose(f"Copied {SOURCE_FILES['tray_ico'].name} → {dest}")
 
     if SOURCE_FILES["logo_dark"].exists():
-        shutil.copy2(SOURCE_FILES["logo_dark"], CONFIG_DIR / "background.png")
+        dest = CONFIG_DIR / "background.png"
+        shutil.copy2(SOURCE_FILES["logo_dark"], dest)
+        print_verbose(f"Copied {SOURCE_FILES['logo_dark'].name} → {dest}")
 
     if SOURCE_FILES["logo_light"].exists():
-        shutil.copy2(SOURCE_FILES["logo_light"], CONFIG_DIR / "background_light.png")
+        dest = CONFIG_DIR / "background_light.png"
+        shutil.copy2(SOURCE_FILES["logo_light"], dest)
+        print_verbose(f"Copied {SOURCE_FILES['logo_light'].name} → {dest}")
 
     print_success("Application files installed")
 
@@ -673,6 +704,386 @@ def check_status():
 
 
 # ============================================================================
+# Version Management
+# ============================================================================
+
+def get_version_from_file(filepath):
+    """Extract __version__ from a Python file."""
+    try:
+        with open(filepath, 'r') as f:
+            content = f.read()
+        match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+        if match:
+            return match.group(1)
+    except (IOError, OSError):
+        pass
+    return None
+
+
+def get_installed_version():
+    """Get the version of the installed SnipForge."""
+    installed_script = INSTALL_DIR / "snipforge.py"
+    if installed_script.exists():
+        return get_version_from_file(installed_script)
+    return None
+
+
+def get_source_version():
+    """Get the version from the source snipforge.py."""
+    if SOURCE_FILES["main"].exists():
+        return get_version_from_file(SOURCE_FILES["main"])
+    return None
+
+
+def get_github_latest_version():
+    """Fetch the latest release version from GitHub."""
+    try:
+        with urlopen(GITHUB_API_URL, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            tag = data.get("tag_name", "")
+            # Remove 'v' prefix if present
+            return tag.lstrip("v") if tag else None
+    except (URLError, json.JSONDecodeError, KeyError, TimeoutError):
+        return None
+
+
+def compare_versions(v1, v2):
+    """
+    Compare two version strings.
+    Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+    """
+    def parse_version(v):
+        return [int(x) for x in v.split(".")]
+
+    try:
+        p1, p2 = parse_version(v1), parse_version(v2)
+        if p1 < p2:
+            return -1
+        elif p1 > p2:
+            return 1
+        return 0
+    except (ValueError, AttributeError):
+        return 0
+
+
+def check_version():
+    """Display version information and check for updates."""
+    print_header(f"{APP_DISPLAY_NAME} Version Information")
+
+    installed = get_installed_version()
+    source = get_source_version()
+    latest = get_github_latest_version()
+
+    print(f"{Colors.BOLD}Versions:{Colors.RESET}")
+
+    # Installed version
+    if installed:
+        print(f"  Installed:  {Colors.GREEN}{installed}{Colors.RESET}")
+    else:
+        print(f"  Installed:  {Colors.YELLOW}not installed{Colors.RESET}")
+
+    # Source version
+    if source:
+        print(f"  Source:     {Colors.CYAN}{source}{Colors.RESET}")
+    else:
+        print(f"  Source:     {Colors.YELLOW}not found{Colors.RESET}")
+
+    # GitHub latest
+    if latest:
+        print(f"  Latest:     {Colors.BLUE}{latest}{Colors.RESET} (GitHub)")
+    else:
+        print(f"  Latest:     {Colors.YELLOW}unable to check{Colors.RESET}")
+
+    # Installer version
+    print(f"  Installer:  {APP_VERSION}")
+
+    # Update recommendations
+    print(f"\n{Colors.BOLD}Status:{Colors.RESET}")
+
+    if not installed:
+        print_info("SnipForge is not installed. Run: python install.py install")
+    elif source and compare_versions(installed, source) < 0:
+        print_warning(f"Source version ({source}) is newer than installed ({installed})")
+        print_info("Run: python install.py update")
+    elif latest and compare_versions(installed, latest) < 0:
+        print_warning(f"A new version ({latest}) is available on GitHub!")
+        print_info("Run: git pull && python install.py update")
+    else:
+        print_success("You are running the latest version")
+
+
+# ============================================================================
+# Backup and Restore
+# ============================================================================
+
+def list_backups():
+    """List available backups."""
+    if not BACKUP_DIR.exists():
+        return []
+
+    backups = sorted(BACKUP_DIR.glob("*.tar.gz"), reverse=True)
+    return backups
+
+
+def backup_config(output_path=None):
+    """Create a backup of the configuration directory."""
+    print_header(f"{APP_DISPLAY_NAME} Backup")
+
+    if not CONFIG_DIR.exists():
+        print_error(f"Configuration directory not found: {CONFIG_DIR}")
+        return False
+
+    # Create backup directory
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Generate backup filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if output_path:
+        backup_file = Path(output_path)
+    else:
+        backup_file = BACKUP_DIR / f"snipforge_backup_{timestamp}.tar.gz"
+
+    print_step(f"Creating backup of {CONFIG_DIR}...")
+
+    try:
+        with tarfile.open(backup_file, "w:gz") as tar:
+            # Add config directory contents
+            for item in CONFIG_DIR.iterdir():
+                arcname = item.name
+                tar.add(item, arcname=arcname)
+                print_verbose(f"Added: {item.name}")
+
+        size_kb = backup_file.stat().st_size / 1024
+        print_success(f"Backup created: {backup_file}")
+        print_info(f"Size: {size_kb:.1f} KB")
+
+        # List recent backups
+        backups = list_backups()
+        if len(backups) > 1:
+            print(f"\n{Colors.BOLD}Available backups:{Colors.RESET}")
+            for b in backups[:5]:
+                print(f"  - {b.name}")
+            if len(backups) > 5:
+                print(f"  ... and {len(backups) - 5} more")
+
+        return True
+
+    except (OSError, tarfile.TarError) as e:
+        print_error(f"Backup failed: {e}")
+        return False
+
+
+def restore_config(backup_path=None):
+    """Restore configuration from a backup."""
+    print_header(f"{APP_DISPLAY_NAME} Restore")
+
+    # Find backup file
+    if backup_path:
+        backup_file = Path(backup_path)
+        if not backup_file.exists():
+            print_error(f"Backup file not found: {backup_file}")
+            return False
+    else:
+        # Use most recent backup
+        backups = list_backups()
+        if not backups:
+            print_error("No backups found")
+            print_info(f"Backup directory: {BACKUP_DIR}")
+            return False
+
+        backup_file = backups[0]
+        print_info(f"Using most recent backup: {backup_file.name}")
+
+    # Confirm restore
+    if CONFIG_DIR.exists():
+        if not prompt_yes_no(f"This will overwrite {CONFIG_DIR}. Continue?", default=False):
+            print_info("Restore cancelled")
+            return False
+
+    print_step(f"Restoring from {backup_file.name}...")
+
+    try:
+        # Create config directory if needed
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Extract backup
+        with tarfile.open(backup_file, "r:gz") as tar:
+            # Safety check: ensure no path traversal
+            for member in tar.getmembers():
+                if member.name.startswith("/") or ".." in member.name:
+                    print_error(f"Invalid path in backup: {member.name}")
+                    return False
+
+            tar.extractall(path=CONFIG_DIR)
+            print_verbose(f"Extracted {len(tar.getmembers())} items")
+
+        print_success("Configuration restored successfully")
+        print_info("Restart SnipForge to apply changes")
+        return True
+
+    except (OSError, tarfile.TarError) as e:
+        print_error(f"Restore failed: {e}")
+        return False
+
+
+def show_backups():
+    """Display list of available backups."""
+    print_header(f"{APP_DISPLAY_NAME} Backups")
+
+    backups = list_backups()
+
+    if not backups:
+        print_info("No backups found")
+        print_info(f"Create one with: python install.py backup")
+        return
+
+    print(f"{Colors.BOLD}Available backups:{Colors.RESET}\n")
+    for i, backup in enumerate(backups, 1):
+        size_kb = backup.stat().st_size / 1024
+        mtime = datetime.fromtimestamp(backup.stat().st_mtime)
+        date_str = mtime.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"  {i}. {backup.name}")
+        print(f"     {Colors.CYAN}{date_str}{Colors.RESET} ({size_kb:.1f} KB)")
+
+    print(f"\n{Colors.BOLD}Usage:{Colors.RESET}")
+    print(f"  Restore latest:   python install.py restore")
+    print(f"  Restore specific: python install.py restore <filename>")
+
+
+# ============================================================================
+# Import and Export Snippets
+# ============================================================================
+
+SNIPPETS_FILE = CONFIG_DIR / "snippets.json"
+
+
+def export_snippets(output_path=None):
+    """Export snippets to a JSON file."""
+    print_header(f"{APP_DISPLAY_NAME} Export Snippets")
+
+    if not SNIPPETS_FILE.exists():
+        print_error(f"Snippets file not found: {SNIPPETS_FILE}")
+        print_info("No snippets to export")
+        return False
+
+    # Determine output path
+    if output_path:
+        output_file = Path(output_path)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = Path.cwd() / f"snipforge_snippets_{timestamp}.json"
+
+    print_step(f"Reading snippets from {SNIPPETS_FILE}...")
+
+    try:
+        with open(SNIPPETS_FILE, 'r') as f:
+            snippets = json.load(f)
+
+        # Add export metadata
+        export_data = {
+            "version": APP_VERSION,
+            "exported_at": datetime.now().isoformat(),
+            "snippet_count": len(snippets),
+            "snippets": snippets
+        }
+
+        with open(output_file, 'w') as f:
+            json.dump(export_data, f, indent=2)
+
+        print_success(f"Exported {len(snippets)} snippets to {output_file}")
+        return True
+
+    except (OSError, json.JSONDecodeError) as e:
+        print_error(f"Export failed: {e}")
+        return False
+
+
+def import_snippets(input_path, merge=True):
+    """Import snippets from a JSON file."""
+    print_header(f"{APP_DISPLAY_NAME} Import Snippets")
+
+    input_file = Path(input_path)
+    if not input_file.exists():
+        print_error(f"Import file not found: {input_file}")
+        return False
+
+    print_step(f"Reading snippets from {input_file}...")
+
+    try:
+        with open(input_file, 'r') as f:
+            import_data = json.load(f)
+
+        # Handle both raw snippet arrays and export format with metadata
+        if isinstance(import_data, list):
+            new_snippets = import_data
+        elif isinstance(import_data, dict) and "snippets" in import_data:
+            new_snippets = import_data["snippets"]
+            if "version" in import_data:
+                print_info(f"Import file version: {import_data.get('version')}")
+            if "snippet_count" in import_data:
+                print_info(f"Contains {import_data.get('snippet_count')} snippets")
+        else:
+            print_error("Invalid import file format")
+            return False
+
+        # Validate snippets structure
+        for i, snippet in enumerate(new_snippets):
+            if not isinstance(snippet, dict):
+                print_error(f"Invalid snippet at index {i}")
+                return False
+            if "trigger" not in snippet or "content" not in snippet:
+                print_error(f"Snippet at index {i} missing required fields (trigger, content)")
+                return False
+
+        # Load existing snippets
+        existing_snippets = []
+        if SNIPPETS_FILE.exists() and merge:
+            with open(SNIPPETS_FILE, 'r') as f:
+                existing_snippets = json.load(f)
+            print_info(f"Existing snippets: {len(existing_snippets)}")
+
+        if merge and existing_snippets:
+            # Merge: add new snippets, skip duplicates by trigger
+            existing_triggers = {s.get("trigger") for s in existing_snippets}
+            added = 0
+            skipped = 0
+
+            for snippet in new_snippets:
+                if snippet.get("trigger") in existing_triggers:
+                    print_verbose(f"Skipping duplicate trigger: {snippet.get('trigger')}")
+                    skipped += 1
+                else:
+                    existing_snippets.append(snippet)
+                    existing_triggers.add(snippet.get("trigger"))
+                    added += 1
+
+            final_snippets = existing_snippets
+            print_info(f"Added: {added}, Skipped (duplicates): {skipped}")
+        else:
+            # Replace mode
+            if existing_snippets:
+                if not prompt_yes_no(f"Replace {len(existing_snippets)} existing snippets?", default=False):
+                    print_info("Import cancelled")
+                    return False
+            final_snippets = new_snippets
+
+        # Ensure config directory exists
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Write snippets
+        with open(SNIPPETS_FILE, 'w') as f:
+            json.dump(final_snippets, f, indent=2)
+
+        print_success(f"Imported snippets. Total: {len(final_snippets)}")
+        print_info("Restart SnipForge to apply changes")
+        return True
+
+    except (OSError, json.JSONDecodeError) as e:
+        print_error(f"Import failed: {e}")
+        return False
+
+
+# ============================================================================
 # Main Installation Flow
 # ============================================================================
 
@@ -755,9 +1166,90 @@ def install():
     return True
 
 
+def update():
+    """Update SnipForge to the latest version."""
+    print_header(f"Updating {APP_DISPLAY_NAME}")
+
+    # Check versions
+    installed = get_installed_version()
+    source = get_source_version()
+
+    if not installed:
+        print_error("SnipForge is not installed")
+        print_info("Run: python install.py install")
+        return False
+
+    if not source:
+        print_error("Source files not found")
+        return False
+
+    print_info(f"Installed version: {installed}")
+    print_info(f"Source version: {source}")
+
+    # Compare versions
+    cmp = compare_versions(installed, source)
+    if cmp >= 0:
+        print_success("You already have the latest version")
+        return True
+
+    print_info(f"Update available: {installed} → {source}")
+
+    # Offer backup
+    if prompt_yes_no("Create backup before updating?", default=True):
+        print_step("Creating backup...")
+        if not backup_config():
+            if not prompt_yes_no("Backup failed. Continue anyway?", default=False):
+                return False
+
+    # Stop service if running
+    print_step("Stopping service...")
+    run_command(["systemctl", "--user", "stop", APP_NAME], check=False)
+
+    # Update files
+    print_step("Updating application files...")
+    install_files()
+
+    # Restart service
+    print_step("Starting service...")
+    run_command(["systemctl", "--user", "start", APP_NAME], check=False)
+
+    # Verify
+    new_version = get_installed_version()
+    if new_version == source:
+        print_success(f"Successfully updated to version {new_version}")
+    else:
+        print_warning("Update completed but version mismatch detected")
+
+    return True
+
+
 # ============================================================================
 # Entry Point
 # ============================================================================
+
+def install_deps_only():
+    """Install only dependencies without full installation."""
+    print_header(f"Installing {APP_DISPLAY_NAME} Dependencies")
+
+    distro = Distro()
+    print_info(f"Detected: {distro}")
+
+    dep_manager = DependencyManager(distro)
+    missing = dep_manager.check_dependencies()
+
+    if not missing:
+        print_success("All dependencies already installed")
+        return True
+
+    print_info(f"Missing dependencies: {', '.join(missing)}")
+
+    if dep_manager.install_system_packages():
+        print_success("Dependencies installed successfully")
+        return True
+    else:
+        print_error("Failed to install dependencies")
+        return False
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -765,9 +1257,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python install.py install     Install SnipForge
-    python install.py uninstall   Uninstall SnipForge
-    python install.py status      Check installation status
+    python install.py install          Install SnipForge
+    python install.py uninstall        Uninstall SnipForge
+    python install.py update           Update to latest version
+    python install.py status           Check installation status
+    python install.py version          Show version information
+    python install.py backup           Backup configuration
+    python install.py backup --list    List available backups
+    python install.py restore          Restore from latest backup
+    python install.py export           Export snippets to JSON
+    python install.py import file.json Import snippets from JSON
+    python install.py deps             Install dependencies only
+    python install.py -v install       Verbose installation
 """
     )
 
@@ -775,8 +1276,15 @@ Examples:
         "action",
         nargs="?",
         default="install",
-        choices=["install", "uninstall", "status"],
+        choices=["install", "uninstall", "update", "status", "version", "backup", "restore", "export", "import", "deps"],
         help="Action to perform (default: install)"
+    )
+
+    parser.add_argument(
+        "file",
+        nargs="?",
+        default=None,
+        help="Optional file path for backup/restore/import/export operations"
     )
 
     parser.add_argument(
@@ -791,11 +1299,30 @@ Examples:
         help="Automatic yes to prompts (non-interactive mode)"
     )
 
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show detailed output"
+    )
+
+    parser.add_argument(
+        "-l", "--list",
+        action="store_true",
+        help="List available backups (use with 'backup' action)"
+    )
+
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace existing snippets instead of merging (use with 'import' action)"
+    )
+
     args = parser.parse_args()
 
-    # Set global AUTO_YES flag
-    global AUTO_YES
+    # Set global flags
+    global AUTO_YES, VERBOSE
     AUTO_YES = args.yes
+    VERBOSE = args.verbose
 
     # Check we're on Linux
     if sys.platform != "linux":
@@ -810,8 +1337,35 @@ Examples:
             sys.exit(0 if success else 1)
         elif args.action == "uninstall":
             uninstall()
+        elif args.action == "update":
+            success = update()
+            sys.exit(0 if success else 1)
         elif args.action == "status":
             check_status()
+        elif args.action == "version":
+            check_version()
+        elif args.action == "backup":
+            if args.list:
+                show_backups()
+            else:
+                success = backup_config(args.file)
+                sys.exit(0 if success else 1)
+        elif args.action == "restore":
+            success = restore_config(args.file)
+            sys.exit(0 if success else 1)
+        elif args.action == "export":
+            success = export_snippets(args.file)
+            sys.exit(0 if success else 1)
+        elif args.action == "import":
+            if not args.file:
+                print_error("Import requires a file path")
+                print_info("Usage: python install.py import <file.json>")
+                sys.exit(1)
+            success = import_snippets(args.file, merge=not args.replace)
+            sys.exit(0 if success else 1)
+        elif args.action == "deps":
+            success = install_deps_only()
+            sys.exit(0 if success else 1)
     except KeyboardInterrupt:
         print("\n\nOperation cancelled")
         sys.exit(130)

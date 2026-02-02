@@ -39,3 +39,13 @@ Thumbs.db
 
 # Project specific
 *.log
+
+# Build artifacts
+snipforge_installer.py
+
+# Unused assets
+ChatGPT*.png
+SnipForge Logo-black.png
+SnipForge-Logo-no text.png
+SnipForge_Logo-Full-Transparent.png
+SnipForge_Logo-transparent-no text.png
