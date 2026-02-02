@@ -119,9 +119,18 @@ python snipforge.py
 
 **Status:** Ready for Windows Testing
 
-**Last worked on:** Windows installer
+**Last worked on:** Installer robustness improvements
 
 **What was done (Feb 2026):**
+- Improved `install.py` dependency handling for all Linux distros:
+  - Handles broken apt repositories gracefully (continues despite `apt update` errors)
+  - Checks if pip is installed before attempting pip fallback
+  - Auto-installs pip if missing via system package manager or ensurepip
+  - Installs packages one-by-one for better error recovery
+  - Verifies dependencies after each installation step
+  - Shows clear manual install instructions if all automated methods fail
+  - Works for Arch, Debian, Fedora families and unknown distros (pip fallback)
+
 - Updated `install.py` for full Windows support:
   - Platform-aware installation: detects Windows/Linux automatically
   - Windows-specific paths: `%LOCALAPPDATA%\SnipForge` for app, `%APPDATA%\SnipForge` for config

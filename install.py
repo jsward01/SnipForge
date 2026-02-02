@@ -360,11 +360,41 @@ class DependencyManager:
                     print_info("All system packages already installed")
 
             elif pkg_manager == "apt":
-                run_command(["apt", "update"], sudo=True, capture=False)
-                run_command(["apt", "install", "-y"] + packages, sudo=True, capture=False)
+                # Try apt update, but continue even if it fails (broken repos)
+                print_verbose("Running apt update...")
+                update_result = run_command(["apt", "update"], sudo=True, check=False, capture=True)
+                if update_result.returncode != 0:
+                    print_warning("apt update had errors (possibly broken repositories)")
+                    print_info("Attempting to install packages anyway...")
+
+                # Try to install packages one by one for better error handling
+                failed_packages = []
+                for pkg in packages:
+                    try:
+                        result = run_command(["apt", "install", "-y", pkg], sudo=True, capture=True, check=False)
+                        if result.returncode == 0:
+                            print_verbose(f"Installed {pkg}")
+                        else:
+                            print_verbose(f"Failed to install {pkg}")
+                            failed_packages.append(pkg)
+                    except Exception as e:
+                        print_verbose(f"Error installing {pkg}: {e}")
+                        failed_packages.append(pkg)
+
+                if failed_packages:
+                    print_warning(f"Some packages failed to install: {', '.join(failed_packages)}")
+                    print_info("Will try pip for Python packages...")
+                    # Don't return False yet - check if core Python deps are missing
 
             elif pkg_manager == "dnf":
                 run_command(["dnf", "install", "-y"] + packages, sudo=True, capture=False)
+
+            # Verify what we have after system package installation
+            still_missing = self.check_dependencies()
+            if still_missing:
+                print_warning(f"Still missing after system install: {', '.join(still_missing)}")
+                print_info("Falling back to pip for remaining packages...")
+                return self.install_pip_packages()
 
             print_success("System packages installed")
             return True
@@ -374,19 +404,110 @@ class DependencyManager:
             print_info("Falling back to pip installation...")
             return self.install_pip_packages()
 
+    def ensure_pip_installed(self):
+        """Ensure pip is installed, install it if missing."""
+        # Check if pip is available
+        result = run_command([sys.executable, "-m", "pip", "--version"], check=False, capture=True)
+        if result.returncode == 0:
+            print_verbose("pip is already installed")
+            return True
+
+        print_warning("pip is not installed")
+        print_step("Attempting to install pip...")
+
+        # Try to install pip via system package manager first
+        if self.distro.family == Distro.FAMILY_DEBIAN:
+            try:
+                run_command(["apt", "install", "-y", "python3-pip"], sudo=True, capture=False)
+                # Verify pip works now
+                result = run_command([sys.executable, "-m", "pip", "--version"], check=False, capture=True)
+                if result.returncode == 0:
+                    print_success("pip installed via apt")
+                    return True
+            except Exception:
+                pass
+
+        elif self.distro.family == Distro.FAMILY_ARCH:
+            try:
+                run_command(["pacman", "-S", "--noconfirm", "python-pip"], sudo=True, capture=False)
+                result = run_command([sys.executable, "-m", "pip", "--version"], check=False, capture=True)
+                if result.returncode == 0:
+                    print_success("pip installed via pacman")
+                    return True
+            except Exception:
+                pass
+
+        elif self.distro.family == Distro.FAMILY_FEDORA:
+            try:
+                run_command(["dnf", "install", "-y", "python3-pip"], sudo=True, capture=False)
+                result = run_command([sys.executable, "-m", "pip", "--version"], check=False, capture=True)
+                if result.returncode == 0:
+                    print_success("pip installed via dnf")
+                    return True
+            except Exception:
+                pass
+
+        # Try ensurepip as fallback
+        print_info("Trying ensurepip...")
+        try:
+            run_command([sys.executable, "-m", "ensurepip", "--user"], check=False, capture=False)
+            result = run_command([sys.executable, "-m", "pip", "--version"], check=False, capture=True)
+            if result.returncode == 0:
+                print_success("pip installed via ensurepip")
+                return True
+        except Exception:
+            pass
+
+        print_error("Could not install pip")
+        print_info("Please install pip manually:")
+        if self.distro.family == Distro.FAMILY_DEBIAN:
+            print("    sudo apt install python3-pip")
+        elif self.distro.family == Distro.FAMILY_ARCH:
+            print("    sudo pacman -S python-pip")
+        elif self.distro.family == Distro.FAMILY_FEDORA:
+            print("    sudo dnf install python3-pip")
+        else:
+            print("    python3 -m ensurepip --user")
+        return False
+
     def install_pip_packages(self):
         """Install packages via pip."""
         print_step("Installing Python packages via pip...")
 
-        try:
-            run_command([
-                sys.executable, "-m", "pip", "install", "--user", "--upgrade"
-            ] + self.pip_packages, capture=False)
-            print_success("Python packages installed via pip")
-            return True
-        except subprocess.CalledProcessError:
-            print_error("Failed to install Python packages")
+        # First ensure pip is installed
+        if not self.ensure_pip_installed():
+            print_error("Cannot install pip packages without pip")
             return False
+
+        # Install packages one by one for better error handling
+        failed = []
+        for pkg in self.pip_packages:
+            try:
+                result = run_command([
+                    sys.executable, "-m", "pip", "install", "--user", "--upgrade", pkg
+                ], capture=True, check=False)
+                if result.returncode == 0:
+                    print_verbose(f"Installed {pkg}")
+                else:
+                    print_verbose(f"Failed to install {pkg}")
+                    failed.append(pkg)
+            except Exception as e:
+                print_verbose(f"Error installing {pkg}: {e}")
+                failed.append(pkg)
+
+        if failed:
+            print_warning(f"Some packages failed to install: {', '.join(failed)}")
+
+        # Check if the essential packages are now available
+        still_missing = self.check_dependencies()
+        if still_missing:
+            print_error(f"Failed to install required packages: {', '.join(still_missing)}")
+            print_info("You can try installing them manually:")
+            print(f"    pip install {' '.join(still_missing)}")
+            return False
+
+        print_success("Python packages installed via pip")
+        return True
 
     def check_dependencies(self):
         """Check if all required Python modules are available."""
@@ -1508,16 +1629,24 @@ def install_linux():
     # Install dependencies
     dep_manager = DependencyManager(distro)
 
-    # Check if deps already installed
+    # Check if deps already installed FIRST
+    print_step("Checking dependencies...")
     missing = dep_manager.check_dependencies()
     if missing:
-        print_info(f"Missing dependencies: {', '.join(missing)}")
-        if prompt_yes_no("Install dependencies using system package manager?", default=True):
+        print_info(f"Missing Python dependencies: {', '.join(missing)}")
+        if prompt_yes_no("Install dependencies?", default=True):
             if not dep_manager.install_system_packages():
-                print_error("Failed to install dependencies")
-                return False
+                # Final check - maybe some things installed despite errors
+                still_missing = dep_manager.check_dependencies()
+                if still_missing:
+                    print_error(f"Failed to install dependencies: {', '.join(still_missing)}")
+                    print_info("You can install them manually and run the installer again.")
+                    return False
+                else:
+                    print_success("All dependencies are now installed")
         else:
             print_warning("Skipping dependency installation")
+            print_warning("SnipForge may not work without these dependencies!")
     else:
         print_success("All dependencies already installed")
 
