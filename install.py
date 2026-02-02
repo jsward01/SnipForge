@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 SnipForge Installer
-Cross-platform installer for Linux distributions.
+Cross-platform installer for Linux and Windows.
 
-Supported distros:
-- Arch-based (CachyOS, Manjaro, EndeavourOS, etc.)
-- Debian-based (Debian, Ubuntu, Pop!_OS, Linux Mint, LMDE, etc.)
-- Fedora-based (Fedora, RHEL, CentOS Stream, etc.)
+Supported platforms:
+- Windows 10/11
+- Arch-based Linux (CachyOS, Manjaro, EndeavourOS, etc.)
+- Debian-based Linux (Debian, Ubuntu, Pop!_OS, Linux Mint, LMDE, etc.)
+- Fedora-based Linux (Fedora, RHEL, CentOS Stream, etc.)
 
 Usage:
     python install.py install    # Install SnipForge
@@ -27,6 +28,11 @@ from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import URLError
 
+# Platform detection
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
+IS_MACOS = sys.platform == 'darwin'
+
 
 # ============================================================================
 # Configuration
@@ -43,14 +49,36 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 AUTO_YES = False   # --yes flag for non-interactive mode
 VERBOSE = False    # --verbose flag for detailed output
 
-# Installation paths
-INSTALL_DIR = Path.home() / ".local" / "share" / APP_NAME
-CONFIG_DIR = Path.home() / ".config" / APP_NAME
-BACKUP_DIR = INSTALL_DIR / "backups"
-DESKTOP_FILE = Path.home() / ".local" / "share" / "applications" / f"{APP_NAME}.desktop"
-AUTOSTART_FILE = Path.home() / ".config" / "autostart" / f"{APP_NAME}.desktop"
-SYSTEMD_SERVICE = Path.home() / ".config" / "systemd" / "user" / f"{APP_NAME}.service"
-BIN_LINK = Path.home() / ".local" / "bin" / APP_NAME
+# Installation paths (platform-specific)
+if IS_WINDOWS:
+    # Windows paths
+    APPDATA = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+    LOCALAPPDATA = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+    INSTALL_DIR = LOCALAPPDATA / APP_DISPLAY_NAME
+    CONFIG_DIR = APPDATA / APP_DISPLAY_NAME
+    BACKUP_DIR = INSTALL_DIR / "backups"
+    # Start Menu and Startup locations
+    START_MENU = APPDATA / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    STARTUP_FOLDER = APPDATA / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    START_MENU_SHORTCUT = START_MENU / f"{APP_DISPLAY_NAME}.lnk"
+    STARTUP_SHORTCUT = STARTUP_FOLDER / f"{APP_DISPLAY_NAME}.lnk"
+    BIN_LINK = None  # Not used on Windows
+    # Linux-specific paths (not used on Windows)
+    DESKTOP_FILE = None
+    AUTOSTART_FILE = None
+    SYSTEMD_SERVICE = None
+else:
+    # Linux paths
+    INSTALL_DIR = Path.home() / ".local" / "share" / APP_NAME
+    CONFIG_DIR = Path.home() / ".config" / APP_NAME
+    BACKUP_DIR = INSTALL_DIR / "backups"
+    DESKTOP_FILE = Path.home() / ".local" / "share" / "applications" / f"{APP_NAME}.desktop"
+    AUTOSTART_FILE = Path.home() / ".config" / "autostart" / f"{APP_NAME}.desktop"
+    SYSTEMD_SERVICE = Path.home() / ".config" / "systemd" / "user" / f"{APP_NAME}.service"
+    BIN_LINK = Path.home() / ".local" / "bin" / APP_NAME
+    # Windows-specific paths (not used on Linux)
+    START_MENU_SHORTCUT = None
+    STARTUP_SHORTCUT = None
 
 # Source files (relative to installer location)
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -275,7 +303,7 @@ class DependencyManager:
     }
 
     # Fallback pip packages if system packages unavailable
-    PIP_PACKAGES = [
+    PIP_PACKAGES_LINUX = [
         "PyQt5",
         "pynput",
         "pyperclip",
@@ -283,8 +311,18 @@ class DependencyManager:
         "evdev",
     ]
 
+    # Windows pip packages
+    PIP_PACKAGES_WINDOWS = [
+        "PyQt5",
+        "pynput",
+        "pyperclip",
+        "Pillow",
+        "pywin32",
+    ]
+
     def __init__(self, distro):
         self.distro = distro
+        self.pip_packages = self.PIP_PACKAGES_WINDOWS if IS_WINDOWS else self.PIP_PACKAGES_LINUX
 
     def get_package_manager(self):
         """Get the package manager command for this distro."""
@@ -337,13 +375,13 @@ class DependencyManager:
             return self.install_pip_packages()
 
     def install_pip_packages(self):
-        """Install packages via pip as fallback."""
+        """Install packages via pip."""
         print_step("Installing Python packages via pip...")
 
         try:
             run_command([
                 sys.executable, "-m", "pip", "install", "--user", "--upgrade"
-            ] + self.PIP_PACKAGES, capture=False)
+            ] + self.pip_packages, capture=False)
             print_success("Python packages installed via pip")
             return True
         except subprocess.CalledProcessError:
@@ -353,7 +391,15 @@ class DependencyManager:
     def check_dependencies(self):
         """Check if all required Python modules are available."""
         missing = []
-        modules = ["PyQt5", "pynput", "pyperclip", "PIL", "evdev"]
+        if IS_WINDOWS:
+            modules = ["PyQt5", "pynput", "pyperclip", "PIL"]
+            # Check for pywin32
+            try:
+                import win32api
+            except ImportError:
+                missing.append("pywin32")
+        else:
+            modules = ["PyQt5", "pynput", "pyperclip", "PIL", "evdev"]
 
         for module in modules:
             try:
@@ -362,6 +408,45 @@ class DependencyManager:
                 missing.append(module)
 
         return missing
+
+
+# ============================================================================
+# Windows Shortcut Creation
+# ============================================================================
+
+def create_windows_shortcut(shortcut_path, target_path, working_dir=None, icon_path=None, description=None):
+    """
+    Create a Windows shortcut (.lnk file) using PowerShell.
+    This avoids requiring pywin32 for shortcut creation.
+    """
+    if not IS_WINDOWS:
+        return False
+
+    # PowerShell script to create shortcut
+    ps_script = f'''
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
+$Shortcut.TargetPath = "{target_path}"
+'''
+    if working_dir:
+        ps_script += f'$Shortcut.WorkingDirectory = "{working_dir}"\n'
+    if icon_path:
+        ps_script += f'$Shortcut.IconLocation = "{icon_path}"\n'
+    if description:
+        ps_script += f'$Shortcut.Description = "{description}"\n'
+
+    ps_script += '$Shortcut.Save()'
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print_verbose(f"PowerShell shortcut creation failed: {e}")
+        return False
 
 
 # ============================================================================
@@ -387,26 +472,56 @@ def check_source_files():
     return True
 
 
-def create_directories():
-    """Create necessary directories."""
+def create_directories_windows():
+    """Create necessary directories on Windows."""
     print_step("Creating directories...")
 
     directories = [
         INSTALL_DIR,
         CONFIG_DIR,
-        DESKTOP_FILE.parent,
-        AUTOSTART_FILE.parent,
-        SYSTEMD_SERVICE.parent,
-        BIN_LINK.parent,
+        START_MENU,
+        STARTUP_FOLDER,
     ]
 
     for dir_path in directories:
-        created = not dir_path.exists()
-        dir_path.mkdir(parents=True, exist_ok=True)
-        if created:
-            print_verbose(f"Created {dir_path}")
+        if dir_path:
+            created = not dir_path.exists()
+            dir_path.mkdir(parents=True, exist_ok=True)
+            if created:
+                print_verbose(f"Created {dir_path}")
 
     print_success("Directories created")
+
+
+def create_directories_linux():
+    """Create necessary directories on Linux."""
+    print_step("Creating directories...")
+
+    directories = [
+        INSTALL_DIR,
+        CONFIG_DIR,
+        DESKTOP_FILE.parent if DESKTOP_FILE else None,
+        AUTOSTART_FILE.parent if AUTOSTART_FILE else None,
+        SYSTEMD_SERVICE.parent if SYSTEMD_SERVICE else None,
+        BIN_LINK.parent if BIN_LINK else None,
+    ]
+
+    for dir_path in directories:
+        if dir_path:
+            created = not dir_path.exists()
+            dir_path.mkdir(parents=True, exist_ok=True)
+            if created:
+                print_verbose(f"Created {dir_path}")
+
+    print_success("Directories created")
+
+
+def create_directories():
+    """Create necessary directories (platform-aware)."""
+    if IS_WINDOWS:
+        create_directories_windows()
+    else:
+        create_directories_linux()
 
 
 def install_files():
@@ -416,7 +531,8 @@ def install_files():
     # Copy main script
     main_dest = INSTALL_DIR / "snipforge.py"
     shutil.copy2(SOURCE_FILES["main"], main_dest)
-    main_dest.chmod(0o755)
+    if not IS_WINDOWS:
+        main_dest.chmod(0o755)
     print_verbose(f"Copied {SOURCE_FILES['main']} → {main_dest}")
 
     # Copy icons to config directory
@@ -449,7 +565,11 @@ def install_files():
 
 
 def create_launcher_script():
-    """Create a launcher script in ~/.local/bin."""
+    """Create a launcher script (Linux only)."""
+    if IS_WINDOWS:
+        # Windows uses shortcuts instead
+        return
+
     print_step("Creating launcher script...")
 
     launcher_content = f"""#!/bin/bash
@@ -464,8 +584,105 @@ exec python3 "{INSTALL_DIR / 'snipforge.py'}" "$@"
     print_success(f"Launcher created at {BIN_LINK}")
 
 
+def create_start_menu_shortcut():
+    """Create Start Menu shortcut (Windows only)."""
+    if not IS_WINDOWS:
+        return
+
+    print_step("Creating Start Menu shortcut...")
+
+    # Find pythonw.exe for windowless execution
+    python_exe = shutil.which("pythonw")
+    if not python_exe:
+        python_exe = shutil.which("python")
+
+    if not python_exe:
+        print_warning("Could not find Python executable")
+        return
+
+    target = f'"{python_exe}" "{INSTALL_DIR / "snipforge.py"}"'
+    icon = CONFIG_DIR / "app_icon.ico"
+
+    success = create_windows_shortcut(
+        shortcut_path=str(START_MENU_SHORTCUT),
+        target_path=python_exe,
+        working_dir=str(INSTALL_DIR),
+        icon_path=str(icon) if icon.exists() else None,
+        description=APP_DESCRIPTION
+    )
+
+    if success:
+        # Update the shortcut to include the script argument
+        # This requires a slightly different approach
+        ps_script = f'''
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut("{START_MENU_SHORTCUT}")
+$Shortcut.TargetPath = "{python_exe}"
+$Shortcut.Arguments = '"{INSTALL_DIR / "snipforge.py"}"'
+$Shortcut.WorkingDirectory = "{INSTALL_DIR}"
+$Shortcut.IconLocation = "{icon}"
+$Shortcut.Description = "{APP_DESCRIPTION}"
+$Shortcut.Save()
+'''
+        try:
+            subprocess.run(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+                capture_output=True, text=True
+            )
+            print_success(f"Start Menu shortcut created")
+        except Exception as e:
+            print_warning(f"Failed to create Start Menu shortcut: {e}")
+    else:
+        print_warning("Failed to create Start Menu shortcut")
+
+
+def create_startup_shortcut():
+    """Create Startup folder shortcut for auto-start (Windows only)."""
+    if not IS_WINDOWS:
+        return
+
+    print_step("Creating Startup shortcut...")
+
+    # Find pythonw.exe for windowless execution
+    python_exe = shutil.which("pythonw")
+    if not python_exe:
+        python_exe = shutil.which("python")
+
+    if not python_exe:
+        print_warning("Could not find Python executable")
+        return
+
+    icon = CONFIG_DIR / "app_icon.ico"
+
+    ps_script = f'''
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut("{STARTUP_SHORTCUT}")
+$Shortcut.TargetPath = "{python_exe}"
+$Shortcut.Arguments = '"{INSTALL_DIR / "snipforge.py"}"'
+$Shortcut.WorkingDirectory = "{INSTALL_DIR}"
+$Shortcut.IconLocation = "{icon}"
+$Shortcut.Description = "{APP_DESCRIPTION}"
+$Shortcut.WindowStyle = 7
+$Shortcut.Save()
+'''
+    try:
+        result = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print_success(f"Startup shortcut created (auto-start enabled)")
+        else:
+            print_warning("Failed to create Startup shortcut")
+    except Exception as e:
+        print_warning(f"Failed to create Startup shortcut: {e}")
+
+
 def create_desktop_entry():
-    """Create the .desktop file for application menu."""
+    """Create the .desktop file for application menu (Linux only)."""
+    if IS_WINDOWS:
+        return
+
     print_step("Creating desktop entry...")
 
     desktop_content = f"""[Desktop Entry]
@@ -490,7 +707,10 @@ StartupWMClass={APP_NAME}
 
 
 def create_autostart_entry():
-    """Create autostart entry."""
+    """Create autostart entry (Linux only)."""
+    if IS_WINDOWS:
+        return
+
     print_step("Creating autostart entry...")
 
     autostart_content = f"""[Desktop Entry]
@@ -513,7 +733,10 @@ StartupWMClass={APP_NAME}
 
 
 def create_systemd_service():
-    """Create systemd user service."""
+    """Create systemd user service (Linux only)."""
+    if IS_WINDOWS:
+        return
+
     print_step("Creating systemd user service...")
 
     service_content = f"""[Unit]
@@ -540,7 +763,10 @@ WantedBy=graphical-session.target
 
 
 def setup_input_group():
-    """Add user to input group for evdev access (Wayland)."""
+    """Add user to input group for evdev access (Linux/Wayland only)."""
+    if IS_WINDOWS:
+        return
+
     print_step("Checking input group membership...")
 
     username = os.environ.get("USER", os.environ.get("LOGNAME"))
@@ -570,7 +796,10 @@ def setup_input_group():
 
 
 def enable_service():
-    """Enable and optionally start the systemd service."""
+    """Enable and optionally start the systemd service (Linux only)."""
+    if IS_WINDOWS:
+        return
+
     print_step("Enabling systemd service...")
 
     # Reload systemd user daemon
@@ -588,7 +817,10 @@ def enable_service():
 
 
 def update_desktop_database():
-    """Update desktop database for application menu."""
+    """Update desktop database for application menu (Linux only)."""
+    if IS_WINDOWS:
+        return
+
     print_step("Updating desktop database...")
 
     if command_exists("update-desktop-database"):
@@ -609,6 +841,45 @@ def uninstall():
     """Uninstall SnipForge."""
     print_header(f"Uninstalling {APP_DISPLAY_NAME}")
 
+    if IS_WINDOWS:
+        uninstall_windows()
+    else:
+        uninstall_linux()
+
+
+def uninstall_windows():
+    """Uninstall SnipForge on Windows."""
+    # Remove shortcuts
+    print_step("Removing shortcuts...")
+
+    shortcuts_to_remove = [
+        START_MENU_SHORTCUT,
+        STARTUP_SHORTCUT,
+    ]
+
+    for shortcut in shortcuts_to_remove:
+        if shortcut and shortcut.exists():
+            shortcut.unlink()
+            print_info(f"Removed {shortcut}")
+
+    # Remove install directory
+    if INSTALL_DIR.exists():
+        shutil.rmtree(INSTALL_DIR)
+        print_info(f"Removed {INSTALL_DIR}")
+
+    # Ask about config
+    if CONFIG_DIR.exists():
+        if prompt_yes_no(f"Remove configuration and snippets at {CONFIG_DIR}?", default=False):
+            shutil.rmtree(CONFIG_DIR)
+            print_info(f"Removed {CONFIG_DIR}")
+        else:
+            print_info("Configuration preserved")
+
+    print_success(f"{APP_DISPLAY_NAME} uninstalled successfully!")
+
+
+def uninstall_linux():
+    """Uninstall SnipForge on Linux."""
     # Stop and disable service
     print_step("Stopping service...")
     run_command(["systemctl", "--user", "stop", APP_NAME], check=False)
@@ -624,7 +895,7 @@ def uninstall():
 
     print_step("Removing files...")
     for f in files_to_remove:
-        if f.exists():
+        if f and f.exists():
             f.unlink()
             print_info(f"Removed {f}")
 
@@ -656,13 +927,70 @@ def check_status():
     """Check installation status."""
     print_header(f"{APP_DISPLAY_NAME} Installation Status")
 
+    if IS_WINDOWS:
+        check_status_windows()
+    else:
+        check_status_linux()
+
+
+def check_status_windows():
+    """Check installation status on Windows."""
     # Check files
     checks = [
         ("Application installed", (INSTALL_DIR / "snipforge.py").exists()),
-        ("Desktop entry", DESKTOP_FILE.exists()),
-        ("Autostart entry", AUTOSTART_FILE.exists()),
-        ("Systemd service", SYSTEMD_SERVICE.exists()),
-        ("Launcher script", BIN_LINK.exists()),
+        ("Start Menu shortcut", START_MENU_SHORTCUT.exists() if START_MENU_SHORTCUT else False),
+        ("Startup shortcut (auto-start)", STARTUP_SHORTCUT.exists() if STARTUP_SHORTCUT else False),
+        ("Config directory", CONFIG_DIR.exists()),
+    ]
+
+    print(f"{Colors.BOLD}Files:{Colors.RESET}")
+    for name, exists in checks:
+        status = f"{Colors.GREEN}✓{Colors.RESET}" if exists else f"{Colors.RED}✗{Colors.RESET}"
+        print(f"  {status} {name}")
+
+    # Check dependencies
+    print(f"\n{Colors.BOLD}Dependencies:{Colors.RESET}")
+    distro = type('obj', (object,), {'family': 'windows'})()  # Dummy distro object
+    dep_manager = DependencyManager(distro)
+    missing = dep_manager.check_dependencies()
+
+    modules = ["PyQt5", "pynput", "pyperclip", "PIL", "pywin32"]
+    for mod in modules:
+        mod_name = mod if mod != "pywin32" else "win32api"
+        installed = mod_name not in missing
+        status = f"{Colors.GREEN}✓{Colors.RESET}" if installed else f"{Colors.RED}✗{Colors.RESET}"
+        print(f"  {status} {mod}")
+
+    # Check if process is running
+    print(f"\n{Colors.BOLD}Process Status:{Colors.RESET}")
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq pythonw.exe", "/FO", "CSV"],
+            capture_output=True, text=True
+        )
+        running = "snipforge" in result.stdout.lower() or "pythonw" in result.stdout.lower()
+        # Better check - look for snipforge in window titles
+        result2 = subprocess.run(
+            ["powershell", "-Command", "Get-Process | Where-Object {$_.MainWindowTitle -like '*SnipForge*'}"],
+            capture_output=True, text=True
+        )
+        running = "SnipForge" in result2.stdout or running
+    except Exception:
+        running = False
+
+    status = f"{Colors.GREEN}running{Colors.RESET}" if running else f"{Colors.YELLOW}not detected{Colors.RESET}"
+    print(f"  Status: {status}")
+
+
+def check_status_linux():
+    """Check installation status on Linux."""
+    # Check files
+    checks = [
+        ("Application installed", (INSTALL_DIR / "snipforge.py").exists()),
+        ("Desktop entry", DESKTOP_FILE.exists() if DESKTOP_FILE else False),
+        ("Autostart entry", AUTOSTART_FILE.exists() if AUTOSTART_FILE else False),
+        ("Systemd service", SYSTEMD_SERVICE.exists() if SYSTEMD_SERVICE else False),
+        ("Launcher script", BIN_LINK.exists() if BIN_LINK else False),
         ("Config directory", CONFIG_DIR.exists()),
     ]
 
@@ -1091,6 +1419,80 @@ def install():
     """Run the full installation process."""
     print_header(f"Installing {APP_DISPLAY_NAME}")
 
+    if IS_WINDOWS:
+        return install_windows()
+    else:
+        return install_linux()
+
+
+def install_windows():
+    """Run Windows installation."""
+    print_info(f"Platform: Windows")
+
+    # Check source files
+    if not check_source_files():
+        print_error("Installation aborted: missing source files")
+        return False
+
+    # Install dependencies via pip
+    distro = type('obj', (object,), {'family': 'windows', 'name': 'Windows'})()
+    dep_manager = DependencyManager(distro)
+
+    missing = dep_manager.check_dependencies()
+    if missing:
+        print_info(f"Missing dependencies: {', '.join(missing)}")
+        if prompt_yes_no("Install dependencies via pip?", default=True):
+            if not dep_manager.install_pip_packages():
+                print_error("Failed to install dependencies")
+                return False
+        else:
+            print_warning("Skipping dependency installation")
+    else:
+        print_success("All dependencies already installed")
+
+    # Create directories
+    create_directories()
+
+    # Install files
+    install_files()
+
+    # Create Start Menu shortcut
+    create_start_menu_shortcut()
+
+    # Ask about auto-start
+    if prompt_yes_no("Enable auto-start on Windows login?", default=True):
+        create_startup_shortcut()
+
+    # Done!
+    print_header("Installation Complete!")
+    print_success(f"{APP_DISPLAY_NAME} has been installed successfully!")
+    print()
+    print_info("You can start it from:")
+    print(f"    - Start Menu: {APP_DISPLAY_NAME}")
+    print(f"    - Run directly: pythonw \"{INSTALL_DIR / 'snipforge.py'}\"")
+    print()
+    print_info("Configuration stored at:")
+    print(f"    {CONFIG_DIR}")
+    print()
+
+    # Offer to start now
+    if prompt_yes_no(f"Start {APP_DISPLAY_NAME} now?", default=True):
+        try:
+            python_exe = shutil.which("pythonw") or shutil.which("python")
+            subprocess.Popen(
+                [python_exe, str(INSTALL_DIR / "snipforge.py")],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+            )
+            print_success(f"{APP_DISPLAY_NAME} started!")
+        except Exception as e:
+            print_warning(f"Could not start automatically: {e}")
+            print_info(f"Please start manually from the Start Menu")
+
+    return True
+
+
+def install_linux():
+    """Run Linux installation."""
     # Detect distro
     distro = Distro()
     print_info(f"Detected: {distro}")
@@ -1201,17 +1603,25 @@ def update():
             if not prompt_yes_no("Backup failed. Continue anyway?", default=False):
                 return False
 
-    # Stop service if running
-    print_step("Stopping service...")
-    run_command(["systemctl", "--user", "stop", APP_NAME], check=False)
+    if IS_WINDOWS:
+        # Windows update
+        print_step("Updating application files...")
+        install_files()
 
-    # Update files
-    print_step("Updating application files...")
-    install_files()
+        print_info("Please restart SnipForge to apply the update")
+    else:
+        # Linux update
+        # Stop service if running
+        print_step("Stopping service...")
+        run_command(["systemctl", "--user", "stop", APP_NAME], check=False)
 
-    # Restart service
-    print_step("Starting service...")
-    run_command(["systemctl", "--user", "start", APP_NAME], check=False)
+        # Update files
+        print_step("Updating application files...")
+        install_files()
+
+        # Restart service
+        print_step("Starting service...")
+        run_command(["systemctl", "--user", "start", APP_NAME], check=False)
 
     # Verify
     new_version = get_installed_version()
@@ -1231,8 +1641,12 @@ def install_deps_only():
     """Install only dependencies without full installation."""
     print_header(f"Installing {APP_DISPLAY_NAME} Dependencies")
 
-    distro = Distro()
-    print_info(f"Detected: {distro}")
+    if IS_WINDOWS:
+        print_info("Platform: Windows")
+        distro = type('obj', (object,), {'family': 'windows', 'name': 'Windows'})()
+    else:
+        distro = Distro()
+        print_info(f"Detected: {distro}")
 
     dep_manager = DependencyManager(distro)
     missing = dep_manager.check_dependencies()
@@ -1243,12 +1657,22 @@ def install_deps_only():
 
     print_info(f"Missing dependencies: {', '.join(missing)}")
 
-    if dep_manager.install_system_packages():
-        print_success("Dependencies installed successfully")
-        return True
+    if IS_WINDOWS:
+        # Windows: always use pip
+        if dep_manager.install_pip_packages():
+            print_success("Dependencies installed successfully")
+            return True
+        else:
+            print_error("Failed to install dependencies")
+            return False
     else:
-        print_error("Failed to install dependencies")
-        return False
+        # Linux: try system packages first
+        if dep_manager.install_system_packages():
+            print_success("Dependencies installed successfully")
+            return True
+        else:
+            print_error("Failed to install dependencies")
+            return False
 
 
 def main():
@@ -1324,11 +1748,16 @@ Examples:
     AUTO_YES = args.yes
     VERBOSE = args.verbose
 
-    # Check we're on Linux
-    if sys.platform != "linux":
-        print_error("This installer is for Linux only")
-        print_info("Windows support coming soon!")
+    # Platform info
+    if IS_WINDOWS:
+        print_info("Platform: Windows")
+    elif IS_LINUX:
+        pass  # Will be shown by Distro detection
+    elif IS_MACOS:
+        print_error("macOS is not yet supported")
         sys.exit(1)
+    else:
+        print_warning("Unknown platform, attempting installation anyway")
 
     # Run action
     try:

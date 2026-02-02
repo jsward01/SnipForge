@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-SnipForge - A GUI-based text expansion tool for Linux
-Requires: PyQt5, pynput, pyperclip, Pillow, evdev
-Install: pip install PyQt5 pynput pyperclip Pillow evdev
+SnipForge - A GUI-based text expansion tool for Linux and Windows
+Requires: PyQt5, pynput, pyperclip, Pillow
 
-Note: For Wayland support, add yourself to the 'input' group:
+Install (Windows):
+    pip install PyQt5 pynput pyperclip Pillow pywin32
+
+Install (Linux):
+    pip install PyQt5 pynput pyperclip Pillow evdev
+    # For Wayland support, add yourself to the 'input' group:
     sudo usermod -aG input $USER
-Then log out and back in.
+    # Then log out and back in
 """
 
 __version__ = "1.0.0"
@@ -16,8 +20,15 @@ import json
 import os
 import re
 import socket
+import platform
 from datetime import datetime
 from pathlib import Path
+
+# Platform detection
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
+IS_MACOS = sys.platform == 'darwin'
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem,
                              QDialog, QLabel, QLineEdit, QTextEdit, QMessageBox,
@@ -31,14 +42,55 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QSharedMemory
 from PyQt5.QtGui import QIcon, QColor, QPixmap, QPainter, QPolygonF, QImage, QClipboard, QFont, QFontDatabase, QSyntaxHighlighter, QTextCharFormat
 from pynput import keyboard
 from pynput.keyboard import Key, Controller
-from evdev import InputDevice, ecodes, list_devices
-import selectors
 import pyperclip
 from PIL import Image
 import io
 import time
 import subprocess
 import shutil
+
+# Linux-specific imports
+if IS_LINUX:
+    try:
+        from evdev import InputDevice, ecodes, list_devices
+        import selectors
+        HAS_EVDEV = True
+    except ImportError:
+        HAS_EVDEV = False
+        print("Warning: evdev not available. Using pynput for keyboard input.")
+else:
+    HAS_EVDEV = False
+
+# Windows-specific imports
+if IS_WINDOWS:
+    try:
+        import ctypes
+        from ctypes import wintypes
+        HAS_WIN32 = True
+    except ImportError:
+        HAS_WIN32 = False
+
+
+def get_config_dir():
+    """Get the configuration directory based on platform."""
+    if IS_WINDOWS:
+        # Windows: %APPDATA%\SnipForge
+        appdata = os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')
+        return Path(appdata) / 'SnipForge'
+    else:
+        # Linux/macOS: ~/.config/snipforge
+        return Path.home() / '.config' / 'snipforge'
+
+
+def get_data_dir():
+    """Get the data directory based on platform (for backups, etc.)."""
+    if IS_WINDOWS:
+        # Windows: %LOCALAPPDATA%\SnipForge
+        localappdata = os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')
+        return Path(localappdata) / 'SnipForge'
+    else:
+        # Linux/macOS: ~/.local/share/snipforge
+        return Path.home() / '.local' / 'share' / 'snipforge'
 
 
 class CustomToolTip(QLabel):
@@ -122,31 +174,172 @@ class ToolTipFilter(QObject):
         return False  # Let other events pass through
 
 
+# Cross-platform keyboard controller (pynput)
+_keyboard_controller = None
+
+def get_keyboard_controller():
+    """Get the pynput keyboard controller (lazy initialization)"""
+    global _keyboard_controller
+    if _keyboard_controller is None:
+        _keyboard_controller = Controller()
+    return _keyboard_controller
+
+
+# Linux keycode to pynput Key mapping (for ydotool compatibility)
+LINUX_KEYCODE_TO_PYNPUT = {
+    1: Key.esc,           # Escape
+    14: Key.backspace,    # Backspace
+    28: Key.enter,        # Enter
+    29: Key.ctrl_l,       # Left Ctrl
+    42: Key.shift_l,      # Left Shift
+    47: keyboard.KeyCode.from_char('v'),  # V key
+    105: Key.left,        # Left arrow
+    106: Key.right,       # Right arrow
+    107: Key.end,         # End
+}
+
+
 def run_ydotool(cmd, *args):
-    """Run ydotool command for Wayland keystroke injection"""
+    """Run ydotool command for Wayland keystroke injection (Linux only).
+    On Windows, uses pynput keyboard controller instead."""
+    if IS_WINDOWS:
+        # Use pynput on Windows
+        if cmd == 'key':
+            return _pynput_key_from_ydotool_args(args)
+        elif cmd == 'type':
+            # Skip '--' argument
+            text_args = [a for a in args if a != '--']
+            if text_args:
+                kb = get_keyboard_controller()
+                kb.type(text_args[0])
+            return True
+        elif cmd == 'mousemove':
+            return _pynput_mouse_move(args)
+        elif cmd == 'click':
+            return _pynput_mouse_click(args)
+        return False
+    else:
+        # Use ydotool on Linux
+        try:
+            subprocess.run(['ydotool', cmd] + list(args), check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"ydotool error: {e.stderr.decode() if e.stderr else e}")
+            return False
+        except FileNotFoundError:
+            print("ydotool not found - install with: sudo pacman -S ydotool")
+            return False
+
+
+def _pynput_key_from_ydotool_args(args):
+    """Convert ydotool key arguments to pynput key presses"""
+    kb = get_keyboard_controller()
+    pressed_keys = []
+
+    for arg in args:
+        if ':' in arg:
+            keycode_str, state = arg.split(':')
+            keycode = int(keycode_str)
+            key = LINUX_KEYCODE_TO_PYNPUT.get(keycode)
+
+            if key:
+                if state == '1':  # Press
+                    kb.press(key)
+                    pressed_keys.append(key)
+                elif state == '0':  # Release
+                    kb.release(key)
+                    if key in pressed_keys:
+                        pressed_keys.remove(key)
+
+    # Make sure all keys are released
+    for key in pressed_keys:
+        kb.release(key)
+
+    return True
+
+
+def _pynput_mouse_move(args):
+    """Move mouse using pynput (Windows)"""
     try:
-        subprocess.run(['ydotool', cmd] + list(args), check=True, capture_output=True)
+        from pynput.mouse import Controller as MouseController
+        mouse = MouseController()
+
+        x, y = None, None
+        i = 0
+        while i < len(args):
+            if args[i] == '-x' and i + 1 < len(args):
+                x = int(args[i + 1])
+                i += 2
+            elif args[i] == '-y' and i + 1 < len(args):
+                y = int(args[i + 1])
+                i += 2
+            elif args[i] == '--absolute':
+                i += 1
+            else:
+                i += 1
+
+        if x is not None and y is not None:
+            mouse.position = (x, y)
+            return True
+    except Exception as e:
+        print(f"Mouse move error: {e}")
+    return False
+
+
+def _pynput_mouse_click(args):
+    """Click mouse using pynput (Windows)"""
+    try:
+        from pynput.mouse import Controller as MouseController, Button
+        mouse = MouseController()
+        mouse.click(Button.left, 1)
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"ydotool error: {e.stderr.decode() if e.stderr else e}")
-        return False
-    except FileNotFoundError:
-        print("ydotool not found - install with: sudo pacman -S ydotool")
-        return False
+    except Exception as e:
+        print(f"Mouse click error: {e}")
+    return False
 
 
 def ydotool_key(*keycodes):
-    """Press keys using ydotool. Each keycode is pressed then released."""
-    # Format: keycode:1 (press) keycode:0 (release)
-    args = []
-    for kc in keycodes:
-        args.extend([f"{kc}:1", f"{kc}:0"])
-    return run_ydotool('key', *args)
+    """Press keys using ydotool/pynput. Each keycode is pressed then released."""
+    if IS_WINDOWS:
+        # Use pynput on Windows
+        kb = get_keyboard_controller()
+        for kc in keycodes:
+            key = LINUX_KEYCODE_TO_PYNPUT.get(kc)
+            if key:
+                kb.press(key)
+                kb.release(key)
+            else:
+                print(f"Unknown keycode: {kc}")
+        return True
+    else:
+        # Format: keycode:1 (press) keycode:0 (release)
+        args = []
+        for kc in keycodes:
+            args.extend([f"{kc}:1", f"{kc}:0"])
+        return run_ydotool('key', *args)
 
 
 def ydotool_type(text):
-    """Type text using ydotool"""
-    return run_ydotool('type', '--', text)
+    """Type text using ydotool/pynput"""
+    if IS_WINDOWS:
+        kb = get_keyboard_controller()
+        kb.type(text)
+        return True
+    else:
+        return run_ydotool('type', '--', text)
+
+
+def press_ctrl_v():
+    """Press Ctrl+V to paste (cross-platform)"""
+    if IS_WINDOWS:
+        kb = get_keyboard_controller()
+        kb.press(Key.ctrl_l)
+        kb.press(keyboard.KeyCode.from_char('v'))
+        kb.release(keyboard.KeyCode.from_char('v'))
+        kb.release(Key.ctrl_l)
+        return True
+    else:
+        return run_ydotool('key', '29:1', '47:1', '47:0', '29:0')
 
 
 class SnippetDialog(QDialog):
@@ -4579,7 +4772,9 @@ class SnippetEditorWidget(QWidget):
 
 
 class KeyboardListener(QThread):
-    """Background thread to listen for keyboard input using evdev (Wayland-compatible)"""
+    """Background thread to listen for keyboard input.
+    Uses evdev on Linux (Wayland-compatible) and pynput on Windows/X11.
+    """
 
     trigger_detected = pyqtSignal(dict)  # Pass entire snippet
 
@@ -4591,6 +4786,8 @@ class KeyboardListener(QThread):
         self.keyboard_controller = Controller()
         self.shift_pressed = False
         self.caps_lock = False
+        self.pynput_listener = None  # For pynput mode
+
         # Trigger settings
         settings = settings or {}
         self.case_sensitive = settings.get('case_sensitive', True)
@@ -4598,38 +4795,44 @@ class KeyboardListener(QThread):
         self.require_prefix = settings.get('require_prefix', False)
         self.prefix_char = settings.get('prefix_char', '/')
 
-        # Key code to character mapping (US layout)
-        self.key_map = {
-            ecodes.KEY_A: ('a', 'A'), ecodes.KEY_B: ('b', 'B'), ecodes.KEY_C: ('c', 'C'),
-            ecodes.KEY_D: ('d', 'D'), ecodes.KEY_E: ('e', 'E'), ecodes.KEY_F: ('f', 'F'),
-            ecodes.KEY_G: ('g', 'G'), ecodes.KEY_H: ('h', 'H'), ecodes.KEY_I: ('i', 'I'),
-            ecodes.KEY_J: ('j', 'J'), ecodes.KEY_K: ('k', 'K'), ecodes.KEY_L: ('l', 'L'),
-            ecodes.KEY_M: ('m', 'M'), ecodes.KEY_N: ('n', 'N'), ecodes.KEY_O: ('o', 'O'),
-            ecodes.KEY_P: ('p', 'P'), ecodes.KEY_Q: ('q', 'Q'), ecodes.KEY_R: ('r', 'R'),
-            ecodes.KEY_S: ('s', 'S'), ecodes.KEY_T: ('t', 'T'), ecodes.KEY_U: ('u', 'U'),
-            ecodes.KEY_V: ('v', 'V'), ecodes.KEY_W: ('w', 'W'), ecodes.KEY_X: ('x', 'X'),
-            ecodes.KEY_Y: ('y', 'Y'), ecodes.KEY_Z: ('z', 'Z'),
-            ecodes.KEY_1: ('1', '!'), ecodes.KEY_2: ('2', '@'), ecodes.KEY_3: ('3', '#'),
-            ecodes.KEY_4: ('4', '$'), ecodes.KEY_5: ('5', '%'), ecodes.KEY_6: ('6', '^'),
-            ecodes.KEY_7: ('7', '&'), ecodes.KEY_8: ('8', '*'), ecodes.KEY_9: ('9', '('),
-            ecodes.KEY_0: ('0', ')'),
-            ecodes.KEY_MINUS: ('-', '_'), ecodes.KEY_EQUAL: ('=', '+'),
-            ecodes.KEY_LEFTBRACE: ('[', '{'), ecodes.KEY_RIGHTBRACE: (']', '}'),
-            ecodes.KEY_SEMICOLON: (';', ':'), ecodes.KEY_APOSTROPHE: ("'", '"'),
-            ecodes.KEY_GRAVE: ('`', '~'), ecodes.KEY_BACKSLASH: ('\\', '|'),
-            ecodes.KEY_COMMA: (',', '<'), ecodes.KEY_DOT: ('.', '>'),
-            ecodes.KEY_SLASH: ('/', '?'),
-            ecodes.KEY_SPACE: (' ', ' '),
-            # Numpad keys
-            ecodes.KEY_KP0: ('0', '0'), ecodes.KEY_KP1: ('1', '1'), ecodes.KEY_KP2: ('2', '2'),
-            ecodes.KEY_KP3: ('3', '3'), ecodes.KEY_KP4: ('4', '4'), ecodes.KEY_KP5: ('5', '5'),
-            ecodes.KEY_KP6: ('6', '6'), ecodes.KEY_KP7: ('7', '7'), ecodes.KEY_KP8: ('8', '8'),
-            ecodes.KEY_KP9: ('9', '9'), ecodes.KEY_KPDOT: ('.', '.'), ecodes.KEY_KPSLASH: ('/', '/'),
-            ecodes.KEY_KPASTERISK: ('*', '*'), ecodes.KEY_KPMINUS: ('-', '-'), ecodes.KEY_KPPLUS: ('+', '+'),
-        }
+        # Determine which input method to use
+        self.use_evdev = IS_LINUX and HAS_EVDEV
+
+        # Key code to character mapping (US layout) - only used for evdev
+        if self.use_evdev:
+            self.key_map = {
+                ecodes.KEY_A: ('a', 'A'), ecodes.KEY_B: ('b', 'B'), ecodes.KEY_C: ('c', 'C'),
+                ecodes.KEY_D: ('d', 'D'), ecodes.KEY_E: ('e', 'E'), ecodes.KEY_F: ('f', 'F'),
+                ecodes.KEY_G: ('g', 'G'), ecodes.KEY_H: ('h', 'H'), ecodes.KEY_I: ('i', 'I'),
+                ecodes.KEY_J: ('j', 'J'), ecodes.KEY_K: ('k', 'K'), ecodes.KEY_L: ('l', 'L'),
+                ecodes.KEY_M: ('m', 'M'), ecodes.KEY_N: ('n', 'N'), ecodes.KEY_O: ('o', 'O'),
+                ecodes.KEY_P: ('p', 'P'), ecodes.KEY_Q: ('q', 'Q'), ecodes.KEY_R: ('r', 'R'),
+                ecodes.KEY_S: ('s', 'S'), ecodes.KEY_T: ('t', 'T'), ecodes.KEY_U: ('u', 'U'),
+                ecodes.KEY_V: ('v', 'V'), ecodes.KEY_W: ('w', 'W'), ecodes.KEY_X: ('x', 'X'),
+                ecodes.KEY_Y: ('y', 'Y'), ecodes.KEY_Z: ('z', 'Z'),
+                ecodes.KEY_1: ('1', '!'), ecodes.KEY_2: ('2', '@'), ecodes.KEY_3: ('3', '#'),
+                ecodes.KEY_4: ('4', '$'), ecodes.KEY_5: ('5', '%'), ecodes.KEY_6: ('6', '^'),
+                ecodes.KEY_7: ('7', '&'), ecodes.KEY_8: ('8', '*'), ecodes.KEY_9: ('9', '('),
+                ecodes.KEY_0: ('0', ')'),
+                ecodes.KEY_MINUS: ('-', '_'), ecodes.KEY_EQUAL: ('=', '+'),
+                ecodes.KEY_LEFTBRACE: ('[', '{'), ecodes.KEY_RIGHTBRACE: (']', '}'),
+                ecodes.KEY_SEMICOLON: (';', ':'), ecodes.KEY_APOSTROPHE: ("'", '"'),
+                ecodes.KEY_GRAVE: ('`', '~'), ecodes.KEY_BACKSLASH: ('\\', '|'),
+                ecodes.KEY_COMMA: (',', '<'), ecodes.KEY_DOT: ('.', '>'),
+                ecodes.KEY_SLASH: ('/', '?'),
+                ecodes.KEY_SPACE: (' ', ' '),
+                # Numpad keys
+                ecodes.KEY_KP0: ('0', '0'), ecodes.KEY_KP1: ('1', '1'), ecodes.KEY_KP2: ('2', '2'),
+                ecodes.KEY_KP3: ('3', '3'), ecodes.KEY_KP4: ('4', '4'), ecodes.KEY_KP5: ('5', '5'),
+                ecodes.KEY_KP6: ('6', '6'), ecodes.KEY_KP7: ('7', '7'), ecodes.KEY_KP8: ('8', '8'),
+                ecodes.KEY_KP9: ('9', '9'), ecodes.KEY_KPDOT: ('.', '.'), ecodes.KEY_KPSLASH: ('/', '/'),
+                ecodes.KEY_KPASTERISK: ('*', '*'), ecodes.KEY_KPMINUS: ('-', '-'), ecodes.KEY_KPPLUS: ('+', '+'),
+            }
 
     def find_keyboards(self):
-        """Find all keyboard devices"""
+        """Find all keyboard devices (evdev only)"""
+        if not self.use_evdev:
+            return []
         keyboards = []
         for path in list_devices():
             try:
@@ -4647,12 +4850,23 @@ class KeyboardListener(QThread):
         return keyboards
 
     def run(self):
-        """Start listening to keyboard using evdev"""
+        """Start listening to keyboard input"""
+        if self.use_evdev:
+            self.run_evdev()
+        else:
+            self.run_pynput()
+
+    def run_evdev(self):
+        """Start listening using evdev (Linux/Wayland)"""
         keyboards = self.find_keyboards()
         if not keyboards:
             print("No keyboards found! Make sure you're in the 'input' group.")
             print("Run: sudo usermod -aG input $USER")
             print("Then log out and back in.")
+            # Fall back to pynput
+            print("Falling back to pynput...")
+            self.use_evdev = False
+            self.run_pynput()
             return
 
         selector = selectors.DefaultSelector()
@@ -4665,7 +4879,7 @@ class KeyboardListener(QThread):
                 try:
                     for event in device.read():
                         if event.type == ecodes.EV_KEY:
-                            self.handle_key_event(event)
+                            self.handle_evdev_event(event)
                 except BlockingIOError:
                     pass
                 except Exception as e:
@@ -4673,8 +4887,59 @@ class KeyboardListener(QThread):
 
         selector.close()
 
-    def handle_key_event(self, event):
-        """Handle a key event"""
+    def run_pynput(self):
+        """Start listening using pynput (Windows/X11/fallback)"""
+        print("Using pynput for keyboard input")
+
+        def on_press(key):
+            if not self.running:
+                return False
+            self.handle_pynput_press(key)
+
+        def on_release(key):
+            if not self.running:
+                return False
+            self.handle_pynput_release(key)
+
+        self.pynput_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self.pynput_listener.start()
+
+        # Keep thread alive while running
+        while self.running:
+            time.sleep(0.1)
+
+        if self.pynput_listener:
+            self.pynput_listener.stop()
+
+    def handle_pynput_press(self, key):
+        """Handle pynput key press event"""
+        try:
+            # Get character from key
+            if hasattr(key, 'char') and key.char:
+                char = key.char
+                self.current_buffer += char
+
+                # Keep buffer at reasonable length
+                if len(self.current_buffer) > 50:
+                    self.current_buffer = self.current_buffer[-50:]
+
+                self.check_triggers()
+            elif key == Key.space:
+                self.current_buffer = ""
+            elif key == Key.enter:
+                self.current_buffer = ""
+            elif key == Key.backspace:
+                if self.current_buffer:
+                    self.current_buffer = self.current_buffer[:-1]
+        except Exception as e:
+            pass
+
+    def handle_pynput_release(self, key):
+        """Handle pynput key release event"""
+        pass  # We don't need to track releases for basic functionality
+
+    def handle_evdev_event(self, event):
+        """Handle an evdev key event (Linux)"""
         # Key states: 0 = up, 1 = down, 2 = hold/repeat
 
         # Track shift state
@@ -6212,13 +6477,15 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.config_file = Path.home() / '.config' / 'snipforge' / 'snippets.json'
-        self.folders_file = Path.home() / '.config' / 'snipforge' / 'folders.json'
-        self.settings_file = Path.home() / '.config' / 'snipforge' / 'settings.json'
-        self.emoji_favorites_file = Path.home() / '.config' / 'snipforge' / 'emoji_favorites.json'
-        self.custom_emojis_file = Path.home() / '.config' / 'snipforge' / 'custom_emojis.json'
-        self.custom_emojis_dir = Path.home() / '.config' / 'snipforge' / 'custom_emojis'
-        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        # Platform-aware config directory
+        config_dir = get_config_dir()
+        self.config_file = config_dir / 'snippets.json'
+        self.folders_file = config_dir / 'folders.json'
+        self.settings_file = config_dir / 'settings.json'
+        self.emoji_favorites_file = config_dir / 'emoji_favorites.json'
+        self.custom_emojis_file = config_dir / 'custom_emojis.json'
+        self.custom_emojis_dir = config_dir / 'custom_emojis'
+        config_dir.mkdir(parents=True, exist_ok=True)
         self.custom_emojis_dir.mkdir(parents=True, exist_ok=True)
         self.snippets = self.load_snippets()
         self.custom_folders = self.load_folders()
@@ -6254,7 +6521,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(600, 400)  # Allow window to be resized smaller
 
         # Set window icon
-        app_icon_path = Path.home() / '.config' / 'snipforge' / 'app_icon.ico'
+        app_icon_path = get_config_dir() / 'app_icon.ico'
         if app_icon_path.exists():
             self.setWindowIcon(QIcon(str(app_icon_path)))
 
@@ -6451,7 +6718,7 @@ class MainWindow(QMainWindow):
     def init_system_tray(self):
         """Initialize system tray icon"""
         # Load tray icon from file
-        tray_icon_path = Path.home() / '.config' / 'snipforge' / 'tray_icon.ico'
+        tray_icon_path = get_config_dir() / 'tray_icon.ico'
         if tray_icon_path.exists():
             icon = QIcon(str(tray_icon_path))
         else:
@@ -6533,7 +6800,7 @@ class MainWindow(QMainWindow):
             self.background_pixmap = QPixmap(custom_bg)
         else:
             # Use default background based on theme
-            config_dir = Path.home() / '.config' / 'snipforge'
+            config_dir = get_config_dir()
             if is_light:
                 # Try light mode background first
                 bg_path_light = config_dir / 'background_light.png'
@@ -8472,46 +8739,76 @@ class MainWindow(QMainWindow):
         # Clipboard (supports both text and images)
         if '{{clipboard}}' in content:
             try:
-                import subprocess
                 import tempfile
 
-                # Check what types are available in clipboard
-                result = subprocess.run(['wl-paste', '--list-types'],
-                                       capture_output=True, text=True, timeout=2)
-                clipboard_types = result.stdout.strip().split('\n') if result.stdout else []
+                if IS_LINUX:
+                    # Linux/Wayland: Use wl-paste to check for images
+                    try:
+                        result = subprocess.run(['wl-paste', '--list-types'],
+                                               capture_output=True, text=True, timeout=2)
+                        clipboard_types = result.stdout.strip().split('\n') if result.stdout else []
 
-                # Check if clipboard has an image
-                image_type = None
-                for mime in clipboard_types:
-                    if mime in ['image/png', 'image/jpeg', 'image/jpg', 'image/gif']:
-                        image_type = mime
-                        break
+                        # Check if clipboard has an image
+                        image_type = None
+                        for mime in clipboard_types:
+                            if mime in ['image/png', 'image/jpeg', 'image/jpg', 'image/gif']:
+                                image_type = mime
+                                break
 
-                if image_type:
-                    # Clipboard contains an image - save to temp file
-                    ext = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/gif': '.gif'}[image_type]
-                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
-                    temp_path = temp_file.name
-                    temp_file.close()
+                        if image_type:
+                            # Clipboard contains an image - save to temp file
+                            ext = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/gif': '.gif'}[image_type]
+                            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                            temp_path = temp_file.name
+                            temp_file.close()
 
-                    # Save clipboard image to temp file
-                    with open(temp_path, 'wb') as f:
-                        img_result = subprocess.run(['wl-paste', '--type', image_type],
-                                                   capture_output=True, timeout=5)
-                        f.write(img_result.stdout)
+                            # Save clipboard image to temp file
+                            with open(temp_path, 'wb') as f:
+                                img_result = subprocess.run(['wl-paste', '--type', image_type],
+                                                           capture_output=True, timeout=5)
+                                f.write(img_result.stdout)
 
-                    # Replace {{clipboard}} with {{image:temppath}} for inline image handling
-                    content = content.replace('{{clipboard}}', f'{{{{image:{temp_path}}}}}')
+                            # Replace {{clipboard}} with {{image:temppath}} for inline image handling
+                            content = content.replace('{{clipboard}}', f'{{{{image:{temp_path}}}}}')
+                        else:
+                            # Clipboard contains text
+                            clipboard_content = pyperclip.paste()
+                            content = content.replace('{{clipboard}}', clipboard_content)
+                    except FileNotFoundError:
+                        # wl-paste not available, fall back to text
+                        clipboard_content = pyperclip.paste()
+                        content = content.replace('{{clipboard}}', clipboard_content)
+
+                elif IS_WINDOWS:
+                    # Windows: Check for image using PIL
+                    try:
+                        from PIL import ImageGrab
+                        img = ImageGrab.grabclipboard()
+                        if img is not None:
+                            # Clipboard has an image - save to temp file
+                            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                            temp_path = temp_file.name
+                            temp_file.close()
+                            img.save(temp_path, 'PNG')
+                            content = content.replace('{{clipboard}}', f'{{{{image:{temp_path}}}}}')
+                        else:
+                            # Text content
+                            clipboard_content = pyperclip.paste()
+                            content = content.replace('{{clipboard}}', clipboard_content)
+                    except Exception:
+                        clipboard_content = pyperclip.paste()
+                        content = content.replace('{{clipboard}}', clipboard_content)
                 else:
-                    # Clipboard contains text
+                    # Other platforms: text only
                     clipboard_content = pyperclip.paste()
                     content = content.replace('{{clipboard}}', clipboard_content)
-            except:
+
+            except Exception:
                 # Fallback to text-only
                 try:
                     clipboard_content = pyperclip.paste()
                     content = content.replace('{{clipboard}}', clipboard_content)
-                except:
+                except Exception:
                     content = content.replace('{{clipboard}}', '')
 
         return content
@@ -8747,56 +9044,101 @@ class MainWindow(QMainWindow):
 
             print(f"Pasting image: {image_path}")
 
-            # On Wayland, use wl-copy
-            import subprocess
+            if IS_LINUX:
+                # Linux/Wayland: Use wl-copy
+                # Determine image MIME type
+                if image_path.lower().endswith('.png'):
+                    mime_type = 'image/png'
+                elif image_path.lower().endswith(('.jpg', '.jpeg')):
+                    mime_type = 'image/jpeg'
+                elif image_path.lower().endswith('.gif'):
+                    mime_type = 'image/gif'
+                else:
+                    mime_type = 'image/png'
 
-            # Determine image MIME type
-            if image_path.lower().endswith('.png'):
-                mime_type = 'image/png'
-            elif image_path.lower().endswith(('.jpg', '.jpeg')):
-                mime_type = 'image/jpeg'
-            elif image_path.lower().endswith('.gif'):
-                mime_type = 'image/gif'
-            else:
-                mime_type = 'image/png'
+                try:
+                    # wl-copy must stay running to serve clipboard requests on Wayland
+                    # Use Popen to run it in background
+                    with open(image_path, 'rb') as f:
+                        self._wl_copy_proc = subprocess.Popen(
+                            ['wl-copy', '--type', mime_type],
+                            stdin=f,
+                            env=os.environ.copy(),
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL
+                        )
 
-            try:
-                # wl-copy must stay running to serve clipboard requests on Wayland
-                # Use Popen to run it in background
-                with open(image_path, 'rb') as f:
-                    self._wl_copy_proc = subprocess.Popen(
-                        ['wl-copy', '--type', mime_type],
-                        stdin=f,
-                        env=os.environ.copy(),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
+                    print("wl-copy started (background)")
+                    time.sleep(0.4)
 
-                print("wl-copy started (background)")
+                except Exception as e:
+                    print(f"wl-copy error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return
 
-                # Give clipboard time to be ready
-                time.sleep(0.4)
+                # Paste using Ctrl+V
+                print("Pasting image with Ctrl+V...")
+                press_ctrl_v()
 
-            except Exception as e:
-                print(f"wl-copy error: {e}")
-                import traceback
-                traceback.print_exc()
-                return
+            elif IS_WINDOWS:
+                # Windows: Copy image to clipboard using PIL
+                try:
+                    from PIL import Image as PILImage
+                    img = PILImage.open(image_path)
 
-            # Now paste using ydotool (keycode 29=ctrl, 47=v)
-            print("Pasting image with Ctrl+V...")
-            run_ydotool('key', '29:1', '47:1', '47:0', '29:0')  # Ctrl+V
+                    # Convert to BMP for Windows clipboard (common format)
+                    output = io.BytesIO()
+                    img.convert('RGB').save(output, 'BMP')
+                    data = output.getvalue()[14:]  # Skip BMP header
+                    output.close()
+
+                    # Use win32clipboard
+                    import win32clipboard
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+                    win32clipboard.CloseClipboard()
+
+                    time.sleep(0.2)
+
+                    # Paste using Ctrl+V
+                    press_ctrl_v()
+
+                except ImportError:
+                    # win32clipboard not available, try pyautogui
+                    print("win32clipboard not available, trying pyautogui...")
+                    try:
+                        import pyautogui
+                        # Set clipboard image via PyQt
+                        from PyQt5.QtCore import QMimeData
+                        from PyQt5.QtGui import QImage
+                        qimg = QImage(image_path)
+                        QApplication.clipboard().setImage(qimg)
+                        time.sleep(0.2)
+                        pyautogui.hotkey('ctrl', 'v')
+                    except Exception as e:
+                        print(f"Failed to paste image: {e}")
+                        return
 
             # Wait for paste to complete
             time.sleep(0.4)
 
-            # Press Escape to deselect the image (apps auto-select pasted images)
-            ydotool_key(1)  # Escape key
-            time.sleep(0.2)
-
-            # Press End to move cursor to end of line (after image)
-            ydotool_key(107)  # End key
-            time.sleep(0.1)
+            if IS_LINUX:
+                # Press Escape to deselect the image (apps auto-select pasted images)
+                ydotool_key(1)  # Escape key
+                time.sleep(0.2)
+                # Press End to move cursor to end of line (after image)
+                ydotool_key(107)  # End key
+                time.sleep(0.1)
+            elif IS_WINDOWS:
+                # Similar cleanup on Windows
+                kb = get_keyboard_controller()
+                kb.press(Key.esc)
+                kb.release(Key.esc)
+                time.sleep(0.2)
+                kb.press(Key.end)
+                kb.release(Key.end)
 
             print("Image paste completed")
 
@@ -8808,8 +9150,6 @@ class MainWindow(QMainWindow):
     def paste_table(self, cols, rows):
         """Create and paste an HTML table that word processors convert to native tables"""
         try:
-            import subprocess
-
             # Build HTML table
             html_lines = ['<table border="1" cellpadding="5" cellspacing="0">']
             for r in range(rows):
@@ -8821,45 +9161,7 @@ class MainWindow(QMainWindow):
             html_content = ''.join(html_lines)
 
             print(f"Pasting {cols}x{rows} table as HTML")
-
-            try:
-                # Use wl-copy with text/html MIME type
-                self._wl_copy_proc = subprocess.Popen(
-                    ['wl-copy', '--type', 'text/html'],
-                    stdin=subprocess.PIPE,
-                    env=os.environ.copy(),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                self._wl_copy_proc.stdin.write(html_content.encode('utf-8'))
-                self._wl_copy_proc.stdin.close()
-
-                print("HTML table copied to clipboard")
-
-                # Give clipboard time to be ready
-                time.sleep(0.4)
-
-            except Exception as e:
-                print(f"wl-copy error: {e}")
-                import traceback
-                traceback.print_exc()
-                return
-
-            # Paste using Ctrl+V
-            print("Pasting table with Ctrl+V...")
-            run_ydotool('key', '29:1', '47:1', '47:0', '29:0')  # Ctrl+V
-
-            # Wait for paste to complete
-            time.sleep(0.4)
-
-            # Press Escape to deselect (in case table is selected)
-            ydotool_key(1)  # Escape key
-            time.sleep(0.1)
-
-            # Press End to move cursor to end
-            ydotool_key(107)  # End key
-            time.sleep(0.1)
-
+            self.paste_html(html_content)
             print("Table paste completed")
 
         except Exception as e:
@@ -8870,47 +9172,92 @@ class MainWindow(QMainWindow):
     def paste_html(self, html_content):
         """Paste HTML content so word processors convert it to native formatting"""
         try:
-            import subprocess
-
             print(f"Pasting HTML content")
 
-            try:
-                # Use wl-copy with text/html MIME type
-                self._wl_copy_proc = subprocess.Popen(
-                    ['wl-copy', '--type', 'text/html'],
-                    stdin=subprocess.PIPE,
-                    env=os.environ.copy(),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                self._wl_copy_proc.stdin.write(html_content.encode('utf-8'))
-                self._wl_copy_proc.stdin.close()
+            if IS_LINUX:
+                try:
+                    # Use wl-copy with text/html MIME type
+                    self._wl_copy_proc = subprocess.Popen(
+                        ['wl-copy', '--type', 'text/html'],
+                        stdin=subprocess.PIPE,
+                        env=os.environ.copy(),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    self._wl_copy_proc.stdin.write(html_content.encode('utf-8'))
+                    self._wl_copy_proc.stdin.close()
 
-                print("HTML copied to clipboard")
+                    print("HTML copied to clipboard (Linux)")
+                    time.sleep(0.4)
 
-                # Give clipboard time to be ready
+                except Exception as e:
+                    print(f"wl-copy error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return
+
+                # Paste using Ctrl+V
+                print("Pasting HTML with Ctrl+V...")
+                press_ctrl_v()
                 time.sleep(0.4)
 
-            except Exception as e:
-                print(f"wl-copy error: {e}")
-                import traceback
-                traceback.print_exc()
-                return
+                # Cleanup
+                ydotool_key(1)  # Escape key
+                time.sleep(0.1)
+                ydotool_key(107)  # End key
+                time.sleep(0.1)
 
-            # Paste using Ctrl+V
-            print("Pasting HTML with Ctrl+V...")
-            run_ydotool('key', '29:1', '47:1', '47:0', '29:0')  # Ctrl+V
+            elif IS_WINDOWS:
+                try:
+                    # On Windows, use win32clipboard for HTML format
+                    import win32clipboard
 
-            # Wait for paste to complete
-            time.sleep(0.4)
+                    # Windows HTML clipboard format requires specific header
+                    html_header = """Version:0.9
+StartHTML:00000097
+EndHTML:{end_html:08d}
+StartFragment:00000133
+EndFragment:{end_fragment:08d}
+<html><body>
+<!--StartFragment-->{html}<!--EndFragment-->
+</body></html>"""
 
-            # Press Escape to deselect
-            ydotool_key(1)  # Escape key
-            time.sleep(0.1)
+                    fragment = html_content
+                    html_formatted = html_header.format(
+                        html=fragment,
+                        end_html=97 + 36 + len(fragment) + 36,
+                        end_fragment=133 + len(fragment)
+                    )
 
-            # Press End to move cursor to end
-            ydotool_key(107)  # End key
-            time.sleep(0.1)
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    # CF_HTML = 49429 is the standard Windows HTML clipboard format
+                    win32clipboard.SetClipboardData(
+                        win32clipboard.RegisterClipboardFormat("HTML Format"),
+                        html_formatted.encode('utf-8')
+                    )
+                    win32clipboard.CloseClipboard()
+
+                    print("HTML copied to clipboard (Windows)")
+                    time.sleep(0.2)
+
+                    # Paste using Ctrl+V
+                    press_ctrl_v()
+                    time.sleep(0.4)
+
+                    # Cleanup
+                    kb = get_keyboard_controller()
+                    kb.press(Key.esc)
+                    kb.release(Key.esc)
+                    time.sleep(0.1)
+                    kb.press(Key.end)
+                    kb.release(Key.end)
+
+                except ImportError:
+                    # Fallback: just paste as plain text
+                    print("win32clipboard not available, pasting as plain text")
+                    pyperclip.copy(html_content)
+                    press_ctrl_v()
 
             print("HTML paste completed")
 
@@ -8920,7 +9267,7 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def type_text(self, text):
-        """Type text using ydotool (Wayland-compatible)"""
+        """Type text using clipboard paste (cross-platform)"""
         # Check if text has formatting markers that need HTML conversion
         has_bold = bool(re.search(r'\*\*.+?\*\*', text))
         has_italic = bool(re.search(r'(?<![*])\*[^*]+?\*(?![*])', text))
@@ -8944,10 +9291,10 @@ class MainWindow(QMainWindow):
             pyperclip.copy(text)
             time.sleep(0.1)  # Wait for clipboard to be ready
 
-            # Paste using Ctrl+V (keycodes: 29=ctrl, 47=v)
+            # Paste using Ctrl+V (cross-platform)
             # Note: Ctrl+Shift+V opens "Paste Special" in LibreOffice
             print(f"Sending Ctrl+V to paste {len(text)} chars...")
-            run_ydotool('key', '29:1', '47:1', '47:0', '29:0')
+            press_ctrl_v()
 
             time.sleep(0.15)
             pyperclip.copy(old_clipboard)
@@ -8957,7 +9304,7 @@ class MainWindow(QMainWindow):
     
     def check_show_request(self):
         """Check if another instance is requesting to show the window"""
-        request_file = Path.home() / '.config' / 'snipforge' / 'show_request'
+        request_file = get_config_dir() / 'show_request'
         if request_file.exists():
             try:
                 request_file.unlink()
@@ -8998,19 +9345,44 @@ def disable_kde_blur(widget):
 
 
 def main():
-    # Single instance check
-    lock_socket = None
-    try:
-        lock_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        lock_file = Path.home() / '.config' / 'snipforge' / 'snipforge.lock'
-        lock_file.parent.mkdir(parents=True, exist_ok=True)
-        lock_socket.bind('\0' + str(lock_file))
-    except socket.error:
-        # Another instance is running - request it to show its window
-        print("SnipForge is already running. Bringing it to front...")
-        request_file = Path.home() / '.config' / 'snipforge' / 'show_request'
-        request_file.touch()
-        sys.exit(0)
+    # Single instance check (cross-platform)
+    lock_handle = None
+
+    if IS_WINDOWS:
+        # Windows: Use a named mutex
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            ERROR_ALREADY_EXISTS = 183
+
+            # Create a named mutex
+            mutex_name = "SnipForgeSingleInstanceMutex"
+            lock_handle = kernel32.CreateMutexW(None, False, mutex_name)
+
+            if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+                # Another instance is running - request it to show its window
+                print("SnipForge is already running. Bringing it to front...")
+                request_file = get_config_dir() / 'show_request'
+                request_file.parent.mkdir(parents=True, exist_ok=True)
+                request_file.touch()
+                sys.exit(0)
+        except Exception as e:
+            print(f"Warning: Could not create mutex: {e}")
+    else:
+        # Linux/macOS: Use Unix abstract sockets
+        try:
+            lock_handle = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            lock_file = get_config_dir() / 'snipforge.lock'
+            lock_file.parent.mkdir(parents=True, exist_ok=True)
+            lock_handle.bind('\0' + str(lock_file))
+        except socket.error:
+            # Another instance is running - request it to show its window
+            print("SnipForge is already running. Bringing it to front...")
+            request_file = get_config_dir() / 'show_request'
+            request_file.touch()
+            sys.exit(0)
 
     # Disable Qt's automatic handling of system theme transparency
     import os
@@ -9044,9 +9416,10 @@ def main():
     app.installEventFilter(tooltip_filter)
 
     # Set application-wide icon (required for Linux window managers)
-    app_icon_path = Path.home() / '.config' / 'snipforge' / 'app_icon.png'
+    config_dir = get_config_dir()
+    app_icon_path = config_dir / 'app_icon.png'
     if not app_icon_path.exists():
-        app_icon_path = Path.home() / '.config' / 'snipforge' / 'app_icon.ico'
+        app_icon_path = config_dir / 'app_icon.ico'
     if app_icon_path.exists():
         app.setWindowIcon(QIcon(str(app_icon_path)))
 

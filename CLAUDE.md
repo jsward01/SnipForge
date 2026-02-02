@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SnipForge is a GUI-based text expansion tool for Linux. It's a single-file Python application (`snipforge.py`) that runs in the system tray and expands text snippets when trigger sequences are typed.
+SnipForge is a cross-platform GUI-based text expansion tool for Linux and Windows. It's a single-file Python application (`snipforge.py`) that runs in the system tray and expands text snippets when trigger sequences are typed.
 
 ## Installation
 
@@ -54,7 +54,7 @@ python build_installer.py       # Creates snipforge_installer.py
 | Debian | Debian, Ubuntu, Pop!_OS, Linux Mint, LMDE, Elementary, Zorin | apt |
 | Fedora | Fedora, RHEL, CentOS Stream, Rocky, Alma, Nobara | dnf |
 
-**Installation paths:**
+**Installation paths (Linux):**
 - Application: `~/.local/share/snipforge/snipforge.py`
 - Config/data: `~/.config/snipforge/`
 - Backups: `~/.local/share/snipforge/backups/`
@@ -62,6 +62,13 @@ python build_installer.py       # Creates snipforge_installer.py
 - Desktop entry: `~/.local/share/applications/snipforge.desktop`
 - Autostart: `~/.config/autostart/snipforge.desktop`
 - Systemd service: `~/.config/systemd/user/snipforge.service`
+
+**Installation paths (Windows):**
+- Application: `%LOCALAPPDATA%\SnipForge\snipforge.py`
+- Config/data: `%APPDATA%\SnipForge\`
+- Backups: `%LOCALAPPDATA%\SnipForge\backups\`
+- Start Menu: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\SnipForge.lnk`
+- Startup (auto-start): `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\SnipForge.lnk`
 
 **GitHub Repository:** https://github.com/jsward01/SnipForge
 
@@ -80,18 +87,24 @@ python snipforge.py
 
 ## Architecture
 
-**Single-file application with these key components:**
+**Single-file cross-platform application with these key components:**
 
 - `SnippetDialog` - Qt dialog for creating/editing snippets (legacy, kept for compatibility)
 - `SnippetEditorWidget` - Embedded editor widget for creating/editing snippets within the main window
-- `KeyboardListener` - Background thread using evdev to detect trigger sequences (Wayland-compatible)
+- `KeyboardListener` - Background thread for keyboard monitoring (evdev on Linux/Wayland, pynput on Windows/X11)
 - `MainWindow` - Main Qt window with QStackedWidget for switching between list view and editor view, system tray integration, and expansion logic
 
 **Data flow:** Keyboard input -> buffer matching -> trigger detection -> content expansion (with variable/form processing) -> clipboard paste or character typing
 
-**Configuration:** Snippets stored as JSON at `~/.config/snipforge/snippets.json`
+**Configuration paths:**
+- Linux: `~/.config/snipforge/snippets.json`
+- Windows: `%APPDATA%\SnipForge\snippets.json`
 
-**Platform specifics:** Uses `wl-copy` for Wayland clipboard image operations
+**Platform detection:** `IS_WINDOWS`, `IS_LINUX`, `IS_MACOS` flags at module level
+
+**Platform-specific features:**
+- Linux/Wayland: Uses evdev for keyboard input, ydotool for keystroke injection, wl-copy/wl-paste for clipboard
+- Windows: Uses pynput for keyboard input and keystroke injection, win32clipboard for advanced clipboard operations
 
 ## Snippet Variable Syntax
 
@@ -104,11 +117,39 @@ python snipforge.py
 
 ## Current Work
 
-**Status:** Completed
+**Status:** Ready for Windows Testing
 
-**Last worked on:** Cross-platform Linux installer
+**Last worked on:** Windows installer
 
 **What was done (Feb 2026):**
+- Updated `install.py` for full Windows support:
+  - Platform-aware installation: detects Windows/Linux automatically
+  - Windows-specific paths: `%LOCALAPPDATA%\SnipForge` for app, `%APPDATA%\SnipForge` for config
+  - Creates Start Menu shortcut via PowerShell/WScript.Shell COM object
+  - Creates Startup folder shortcut for auto-start on login (optional)
+  - Uses `pythonw.exe` for windowless execution
+  - Windows-specific uninstall: removes shortcuts and directories
+  - Windows-specific status check: shows shortcuts and process status
+  - Platform-aware dependency installation: pip-only on Windows
+  - All existing Linux functionality preserved
+
+- Previously added Windows compatibility to snipforge.py:
+  - Platform detection: `IS_WINDOWS`, `IS_LINUX`, `IS_MACOS` flags
+  - Cross-platform config paths: `get_config_dir()` and `get_data_dir()` helper functions
+  - Updated `KeyboardListener` to use evdev on Linux, pynput on Windows
+  - Updated clipboard handling: win32clipboard for images/HTML on Windows, wl-copy/wl-paste on Linux
+  - Cross-platform keyboard simulation:
+    - `get_keyboard_controller()` - lazy-initialized pynput keyboard Controller
+    - `press_ctrl_v()` - cross-platform Ctrl+V paste
+    - `ydotool_key()` and `run_ydotool()` - use pynput on Windows, ydotool on Linux
+    - `LINUX_KEYCODE_TO_PYNPUT` mapping for keycode compatibility
+  - Cross-platform single instance check: Named mutex on Windows, Unix abstract sockets on Linux
+  - Dependencies: Added pywin32 requirement for Windows
+
+**What still needs to be done:**
+- Test on Windows 11
+
+**Previous work (Feb 2026):**
 - Created `install.py` - cross-platform Python installer with full feature set:
   - Auto-detects Linux distribution family (Arch, Debian, Fedora)
   - Installs system dependencies via appropriate package manager (pacman, apt, dnf)
@@ -382,9 +423,9 @@ python snipforge.py
 - `SnipForge Logo-black copy.png` - Dark mode background
 - `SnipForge_Logo-white.png` - Light mode background
 
-**Next steps:** Windows 11 compatibility
-- Add platform detection in snipforge.py
-- Use pynput for keyboard on Windows (instead of evdev)
-- Use pyperclip for clipboard on Windows (instead of wl-copy/wl-paste)
-- Update installer for Windows (Startup folder instead of systemd)
+**Next steps:** Windows 11 testing
+- ~~Add platform detection in snipforge.py~~ (Done)
+- ~~Use pynput for keyboard on Windows (instead of evdev)~~ (Done)
+- ~~Use pyperclip/win32clipboard for clipboard on Windows~~ (Done)
+- ~~Update installer for Windows (Windows paths, Start Menu shortcut, Startup folder)~~ (Done)
 - Test on Windows 11
