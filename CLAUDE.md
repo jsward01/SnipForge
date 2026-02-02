@@ -119,9 +119,25 @@ python snipforge.py
 
 **Status:** Ready for Windows Testing
 
-**Last worked on:** Installer robustness improvements
+**Last worked on:** First-run tutorial implementation
 
 **What was done (Feb 2026):**
+- Added first-run tutorial wizard:
+  - New `TutorialDialog` class - 4-step wizard to onboard new users
+  - Step 1 (Welcome): Explains tray icon location and basic concept
+  - Step 2 (Create): Guides user through creating a simple snippet (`:h` -> `Hello!`)
+  - Step 3 (Test): Lets user test the snippet, auto-detects trigger and shows success
+  - Step 4 (Complete): Shows tips for useful snippets and how to create more
+  - Theme-aware styling (dark/light modes)
+  - "Don't show this again" checkbox
+  - Skip button to bypass tutorial
+  - Auto-advances when snippet trigger is detected during test step
+  - Snippet is actually created in the system and persists
+  - Tutorial state saved in `tutorial_completed` setting
+  - Shows on first run only, using 500ms delay after window init
+  - Connected to `KeyboardListener.trigger_detected` signal for real-time detection
+
+**Previous work (Feb 2026):**
 - Improved `install.py` dependency handling for all Linux distros:
   - Handles broken apt repositories gracefully (continues despite `apt update` errors)
   - Checks if pip is installed before attempting pip fallback

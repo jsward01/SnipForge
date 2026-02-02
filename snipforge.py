@@ -1585,6 +1585,628 @@ class SnippetFormDialog(QDialog):
         return self.result_content
 
 
+class TutorialDialog(QDialog):
+    """First-run tutorial wizard to help new users get started"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle("Welcome to SnipForge")
+        self.setMinimumSize(500, 400)
+        self.setMaximumSize(600, 500)
+        self.current_step = 0
+        self.dont_show_again = False
+        self.tutorial_snippet_trigger = ":h"
+        self.tutorial_snippet_content = "Hello!"
+        self.snippet_created = False
+        self.trigger_detected_count = 0
+
+        # Detect current theme from parent window
+        self.is_light_theme = False
+        if parent and hasattr(parent, 'current_theme'):
+            self.is_light_theme = (parent.current_theme == 'Light')
+
+        self.init_ui()
+        self.show_step(0)
+
+    def get_dark_stylesheet(self):
+        """Return dark theme stylesheet for tutorial dialog"""
+        return """
+            QDialog {
+                background-color: #1E1E1E;
+            }
+            QLabel {
+                color: #E0E0E0;
+                font-size: 14px;
+            }
+            QLabel#stepLabel {
+                color: #888888;
+                font-size: 12px;
+            }
+            QLabel#titleLabel {
+                color: #FF6B00;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            QLabel#descLabel {
+                color: #CCCCCC;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            QLabel#successLabel {
+                color: #4CAF50;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QLabel#waitingLabel {
+                color: #FF6B00;
+                font-size: 14px;
+            }
+            QLineEdit {
+                background-color: #2A2A2A;
+                color: #E0E0E0;
+                border: 1px solid #424242;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #FF6B00;
+            }
+            QCheckBox {
+                color: #E0E0E0;
+                spacing: 8px;
+                font-size: 13px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #424242;
+                border-radius: 3px;
+                background-color: #2A2A2A;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #FF6B00;
+                border-color: #FF6B00;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #FF6B00;
+            }
+            QPushButton {
+                background-color: #FF6B00;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 24px;
+                font-weight: 500;
+                font-size: 14px;
+                min-height: 36px;
+            }
+            QPushButton:hover {
+                background-color: #FF8C00;
+            }
+            QPushButton:pressed {
+                background-color: #E65100;
+            }
+            QPushButton#skipBtn {
+                background-color: transparent;
+                color: #888888;
+                border: none;
+            }
+            QPushButton#skipBtn:hover {
+                color: #E0E0E0;
+            }
+            QPushButton#backBtn {
+                background-color: transparent;
+                color: #888888;
+                border: 1px solid #424242;
+            }
+            QPushButton#backBtn:hover {
+                color: #E0E0E0;
+                border-color: #666666;
+            }
+        """
+
+    def get_light_stylesheet(self):
+        """Return light theme stylesheet for tutorial dialog"""
+        return """
+            QDialog {
+                background-color: #F5F5F5;
+            }
+            QLabel {
+                color: #212121;
+                font-size: 14px;
+            }
+            QLabel#stepLabel {
+                color: #757575;
+                font-size: 12px;
+            }
+            QLabel#titleLabel {
+                color: #E65100;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            QLabel#descLabel {
+                color: #424242;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            QLabel#successLabel {
+                color: #2E7D32;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QLabel#waitingLabel {
+                color: #E65100;
+                font-size: 14px;
+            }
+            QLineEdit {
+                background-color: #FFFFFF;
+                color: #212121;
+                border: 1px solid #BDBDBD;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #FF6B00;
+            }
+            QCheckBox {
+                color: #212121;
+                spacing: 8px;
+                font-size: 13px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #BDBDBD;
+                border-radius: 3px;
+                background-color: #FFFFFF;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #FF6B00;
+                border-color: #FF6B00;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #FF6B00;
+            }
+            QPushButton {
+                background-color: #FF6B00;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 24px;
+                font-weight: 500;
+                font-size: 14px;
+                min-height: 36px;
+            }
+            QPushButton:hover {
+                background-color: #FF8C00;
+            }
+            QPushButton:pressed {
+                background-color: #E65100;
+            }
+            QPushButton#skipBtn {
+                background-color: transparent;
+                color: #757575;
+                border: none;
+            }
+            QPushButton#skipBtn:hover {
+                color: #424242;
+            }
+            QPushButton#backBtn {
+                background-color: transparent;
+                color: #757575;
+                border: 1px solid #BDBDBD;
+            }
+            QPushButton#backBtn:hover {
+                color: #424242;
+                border-color: #9E9E9E;
+            }
+        """
+
+    def init_ui(self):
+        """Initialize the tutorial dialog UI"""
+        if self.is_light_theme:
+            self.setStyleSheet(self.get_light_stylesheet())
+        else:
+            self.setStyleSheet(self.get_dark_stylesheet())
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(16)
+
+        # Step indicator at top
+        self.step_label = QLabel("Step 1 of 4")
+        self.step_label.setObjectName("stepLabel")
+        self.step_label.setAlignment(Qt.AlignRight)
+        main_layout.addWidget(self.step_label)
+
+        # Content area (will be updated per step)
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(16)
+        main_layout.addWidget(self.content_widget, 1)
+
+        # Bottom area with checkbox and buttons
+        bottom_layout = QVBoxLayout()
+        bottom_layout.setSpacing(16)
+
+        # Don't show again checkbox (only visible on step 0)
+        self.dont_show_checkbox = QCheckBox("Don't show this tutorial again")
+        self.dont_show_checkbox.stateChanged.connect(self.on_dont_show_changed)
+        bottom_layout.addWidget(self.dont_show_checkbox)
+
+        # Button row
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+
+        self.skip_btn = QPushButton("Skip Tutorial")
+        self.skip_btn.setObjectName("skipBtn")
+        self.skip_btn.clicked.connect(self.on_skip)
+        button_layout.addWidget(self.skip_btn)
+
+        button_layout.addStretch()
+
+        self.back_btn = QPushButton("Back")
+        self.back_btn.setObjectName("backBtn")
+        self.back_btn.clicked.connect(self.on_back)
+        button_layout.addWidget(self.back_btn)
+
+        self.next_btn = QPushButton("Next")
+        self.next_btn.clicked.connect(self.on_next)
+        button_layout.addWidget(self.next_btn)
+
+        bottom_layout.addLayout(button_layout)
+        main_layout.addLayout(bottom_layout)
+
+    def clear_content(self):
+        """Clear all widgets from content area"""
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def show_step(self, step):
+        """Display the content for a specific step"""
+        self.current_step = step
+        self.clear_content()
+
+        # Update step indicator
+        self.step_label.setText(f"Step {step + 1} of 4")
+
+        # Show/hide checkbox only on first step
+        self.dont_show_checkbox.setVisible(step == 0)
+
+        # Show/hide back button
+        self.back_btn.setVisible(step > 0)
+
+        # Update button text
+        if step == 3:
+            self.next_btn.setText("Finish")
+        else:
+            self.next_btn.setText("Next")
+
+        if step == 0:
+            self.show_welcome_step()
+        elif step == 1:
+            self.show_create_step()
+        elif step == 2:
+            self.show_test_step()
+        elif step == 3:
+            self.show_complete_step()
+
+    def show_welcome_step(self):
+        """Step 1: Welcome and explain tray icon"""
+        title = QLabel("Welcome to SnipForge!")
+        title.setObjectName("titleLabel")
+        self.content_layout.addWidget(title)
+
+        # Tray icon illustration
+        tray_widget = QWidget()
+        tray_layout = QHBoxLayout(tray_widget)
+        tray_layout.setContentsMargins(0, 20, 0, 20)
+
+        # Create a visual representation of tray area
+        tray_visual = QLabel()
+        tray_visual.setFixedSize(200, 60)
+        if self.is_light_theme:
+            tray_visual.setStyleSheet("""
+                background-color: #E0E0E0;
+                border-radius: 8px;
+                border: 2px solid #BDBDBD;
+            """)
+        else:
+            tray_visual.setStyleSheet("""
+                background-color: #2A2A2A;
+                border-radius: 8px;
+                border: 2px solid #424242;
+            """)
+
+        # Add tray icon indicator inside
+        inner_layout = QHBoxLayout(tray_visual)
+        inner_layout.setContentsMargins(8, 8, 8, 8)
+        inner_layout.addStretch()
+
+        # Load actual tray icon if available
+        tray_icon_path = get_config_dir() / 'tray_icon.ico'
+        if tray_icon_path.exists():
+            icon_label = QLabel()
+            pixmap = QPixmap(str(tray_icon_path))
+            if not pixmap.isNull():
+                icon_label.setPixmap(pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                inner_layout.addWidget(icon_label)
+        else:
+            # Fallback: show text indicator
+            icon_label = QLabel("🔧")
+            icon_label.setStyleSheet("font-size: 24px;")
+            inner_layout.addWidget(icon_label)
+
+        # Arrow pointing to icon
+        arrow_label = QLabel("←")
+        arrow_label.setStyleSheet("font-size: 24px; color: #FF6B00; font-weight: bold;")
+        inner_layout.addWidget(arrow_label)
+
+        inner_layout.addSpacing(20)
+
+        tray_layout.addStretch()
+        tray_layout.addWidget(tray_visual)
+        tray_layout.addStretch()
+        self.content_layout.addWidget(tray_widget)
+
+        # Description
+        desc = QLabel(
+            "SnipForge runs in your system tray (the area near your clock).\n\n"
+            "Click the tray icon anytime to open the main window and manage your snippets.\n\n"
+            "Snippets are text shortcuts - type a trigger (like ':h') and it automatically "
+            "expands to your saved content."
+        )
+        desc.setObjectName("descLabel")
+        desc.setWordWrap(True)
+        self.content_layout.addWidget(desc)
+
+        self.content_layout.addStretch()
+
+    def show_create_step(self):
+        """Step 2: Create first snippet"""
+        title = QLabel("Create Your First Snippet")
+        title.setObjectName("titleLabel")
+        self.content_layout.addWidget(title)
+
+        desc = QLabel(
+            "A snippet has two parts:\n"
+            "  • Trigger - what you type (e.g., ':h')\n"
+            "  • Content - what it expands to (e.g., 'Hello!')\n\n"
+            "Let's create a simple one to try it out:"
+        )
+        desc.setObjectName("descLabel")
+        desc.setWordWrap(True)
+        self.content_layout.addWidget(desc)
+
+        # Form for trigger and content
+        form_widget = QWidget()
+        form_layout = QVBoxLayout(form_widget)
+        form_layout.setContentsMargins(0, 16, 0, 16)
+        form_layout.setSpacing(12)
+
+        # Trigger input
+        trigger_row = QHBoxLayout()
+        trigger_label = QLabel("Trigger:")
+        trigger_label.setFixedWidth(80)
+        self.trigger_input = QLineEdit()
+        self.trigger_input.setText(self.tutorial_snippet_trigger)
+        self.trigger_input.setPlaceholderText(":h")
+        self.trigger_input.setMaximumWidth(150)
+        trigger_row.addWidget(trigger_label)
+        trigger_row.addWidget(self.trigger_input)
+        trigger_row.addStretch()
+        form_layout.addLayout(trigger_row)
+
+        # Content input
+        content_row = QHBoxLayout()
+        content_label = QLabel("Content:")
+        content_label.setFixedWidth(80)
+        self.content_input = QLineEdit()
+        self.content_input.setText(self.tutorial_snippet_content)
+        self.content_input.setPlaceholderText("Hello!")
+        self.content_input.setMaximumWidth(300)
+        content_row.addWidget(content_label)
+        content_row.addWidget(self.content_input)
+        content_row.addStretch()
+        form_layout.addLayout(content_row)
+
+        self.content_layout.addWidget(form_widget)
+
+        # Status label for snippet creation
+        self.create_status_label = QLabel("")
+        self.create_status_label.setObjectName("successLabel")
+        self.content_layout.addWidget(self.create_status_label)
+
+        self.content_layout.addStretch()
+
+        # Update next button to create snippet
+        self.next_btn.setText("Create & Continue")
+
+    def show_test_step(self):
+        """Step 3: Test the snippet"""
+        title = QLabel("Try It Out!")
+        title.setObjectName("titleLabel")
+        self.content_layout.addWidget(title)
+
+        trigger = self.tutorial_snippet_trigger
+        desc = QLabel(
+            f"Your snippet is ready! Now let's test it:\n\n"
+            f"1. Open any text editor or text field\n"
+            f"2. Type '{trigger}' followed by Space or Enter\n"
+            f"3. Watch it expand to '{self.tutorial_snippet_content}'"
+        )
+        desc.setObjectName("descLabel")
+        desc.setWordWrap(True)
+        self.content_layout.addWidget(desc)
+
+        # Visual feedback area
+        feedback_widget = QWidget()
+        feedback_layout = QVBoxLayout(feedback_widget)
+        feedback_layout.setContentsMargins(0, 24, 0, 24)
+        feedback_layout.setAlignment(Qt.AlignCenter)
+
+        self.waiting_label = QLabel(f"Waiting for you to type '{trigger}'...")
+        self.waiting_label.setObjectName("waitingLabel")
+        self.waiting_label.setAlignment(Qt.AlignCenter)
+        feedback_layout.addWidget(self.waiting_label)
+
+        self.success_label = QLabel("It worked!")
+        self.success_label.setObjectName("successLabel")
+        self.success_label.setAlignment(Qt.AlignCenter)
+        self.success_label.setVisible(False)
+        feedback_layout.addWidget(self.success_label)
+
+        self.content_layout.addWidget(feedback_widget)
+
+        # Add a skip option for those who can't test right now
+        skip_test_label = QLabel("Can't test right now? Click 'Next' to continue anyway.")
+        skip_test_label.setObjectName("descLabel")
+        skip_test_label.setStyleSheet("color: #888888; font-size: 12px;")
+        skip_test_label.setAlignment(Qt.AlignCenter)
+        self.content_layout.addWidget(skip_test_label)
+
+        self.content_layout.addStretch()
+
+        # Connect to trigger detection signal
+        if self.parent_window and hasattr(self.parent_window, 'listener_thread'):
+            self.parent_window.listener_thread.trigger_detected.connect(self.on_trigger_detected)
+
+        # Reset detection counter
+        self.trigger_detected_count = 0
+
+    def show_complete_step(self):
+        """Step 4: Completion and tips"""
+        title = QLabel("You're All Set!")
+        title.setObjectName("titleLabel")
+        self.content_layout.addWidget(title)
+
+        # Checkmark
+        check_label = QLabel("✓")
+        check_label.setStyleSheet("font-size: 48px; color: #4CAF50;")
+        check_label.setAlignment(Qt.AlignCenter)
+        self.content_layout.addWidget(check_label)
+
+        trigger = self.tutorial_snippet_trigger
+        desc = QLabel(
+            f"Your snippet '{trigger}' is working!\n\n"
+            "Here are some ideas for useful snippets:\n"
+            "  • ':email' → your email address\n"
+            "  • ':addr' → your home/work address\n"
+            "  • ':sig' → your email signature\n"
+            "  • ':date' → today's date (use {{date}} for dynamic)\n\n"
+            "Click the tray icon anytime to create more snippets."
+        )
+        desc.setObjectName("descLabel")
+        desc.setWordWrap(True)
+        self.content_layout.addWidget(desc)
+
+        self.content_layout.addStretch()
+
+        # Update finish button
+        self.next_btn.setText("Open SnipForge")
+
+    def on_trigger_detected(self, snippet):
+        """Handle when any trigger is detected during step 3"""
+        if self.current_step != 2:
+            return
+
+        # Check if it's our tutorial snippet
+        if snippet.get('trigger', '') == self.tutorial_snippet_trigger:
+            self.trigger_detected_count += 1
+
+            # Show success
+            self.waiting_label.setVisible(False)
+            self.success_label.setVisible(True)
+
+            # Auto-advance after a short delay
+            QTimer.singleShot(1500, self.auto_advance_from_test)
+
+    def auto_advance_from_test(self):
+        """Auto-advance from test step after success"""
+        if self.current_step == 2:
+            self.show_step(3)
+
+    def on_dont_show_changed(self, state):
+        """Handle checkbox state change"""
+        self.dont_show_again = (state == Qt.Checked)
+
+    def on_skip(self):
+        """Handle skip button click"""
+        self.dont_show_again = True
+        self.accept()
+
+    def on_back(self):
+        """Handle back button click"""
+        if self.current_step > 0:
+            self.show_step(self.current_step - 1)
+
+    def on_next(self):
+        """Handle next/finish button click"""
+        if self.current_step == 1:
+            # Create the snippet before advancing
+            self.create_tutorial_snippet()
+
+        if self.current_step == 3:
+            # Finish - accept the dialog
+            self.accept()
+        else:
+            self.show_step(self.current_step + 1)
+
+    def create_tutorial_snippet(self):
+        """Create the tutorial snippet"""
+        if self.snippet_created:
+            return
+
+        trigger = self.trigger_input.text().strip() if hasattr(self, 'trigger_input') else self.tutorial_snippet_trigger
+        content = self.content_input.text().strip() if hasattr(self, 'content_input') else self.tutorial_snippet_content
+
+        if not trigger:
+            trigger = self.tutorial_snippet_trigger
+        if not content:
+            content = self.tutorial_snippet_content
+
+        # Store for later reference
+        self.tutorial_snippet_trigger = trigger
+        self.tutorial_snippet_content = content
+
+        # Check if snippet with this trigger already exists
+        if self.parent_window:
+            for existing in self.parent_window.snippets:
+                if existing.get('trigger', '') == trigger:
+                    # Snippet already exists, don't create duplicate
+                    self.snippet_created = True
+                    return
+
+            # Create the snippet
+            tutorial_snippet = {
+                'folder': 'General',
+                'trigger': trigger,
+                'description': 'My first snippet (Tutorial)',
+                'type': 'universal',
+                'content': content
+            }
+            self.parent_window.snippets.append(tutorial_snippet)
+            self.parent_window.save_snippets()
+            self.parent_window.refresh_tree()
+            self.snippet_created = True
+
+    def closeEvent(self, event):
+        """Handle dialog close"""
+        # Disconnect signal if connected
+        if self.parent_window and hasattr(self.parent_window, 'listener_thread'):
+            try:
+                self.parent_window.listener_thread.trigger_detected.disconnect(self.on_trigger_detected)
+            except:
+                pass
+        super().closeEvent(event)
+
+
 class FormattingSyntaxHighlighter(QSyntaxHighlighter):
     """Syntax highlighter to show bold, italic, and underline formatting in the editor"""
 
@@ -6513,7 +7135,12 @@ class MainWindow(QMainWindow):
         self.check_timer = QTimer()
         self.check_timer.timeout.connect(self.check_show_request)
         self.check_timer.start(500)  # Check every 500ms
-        
+
+        # Show tutorial on first run
+        if not self.settings.get('tutorial_completed', False):
+            # Use a timer to show tutorial after window is fully initialized
+            QTimer.singleShot(500, self.show_tutorial)
+
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle("SnipForge")
@@ -6854,7 +7481,17 @@ class MainWindow(QMainWindow):
         self.listener_thread = KeyboardListener(self.snippets, self.settings)
         self.listener_thread.trigger_detected.connect(self.handle_trigger)
         self.listener_thread.start()
-    
+
+    def show_tutorial(self):
+        """Show the first-run tutorial dialog"""
+        dialog = TutorialDialog(self)
+        result = dialog.exec_()
+
+        # Mark tutorial as completed if user finished or checked "don't show again"
+        if dialog.dont_show_again or result == QDialog.Accepted:
+            self.settings['tutorial_completed'] = True
+            self.save_settings()
+
     def load_snippets(self):
         """Load snippets from config file (backward compatible with folder field)"""
         if self.config_file.exists():
@@ -6924,6 +7561,8 @@ class MainWindow(QMainWindow):
             # Backup
             'auto_backup': False,
             'backup_path': '',
+            # Tutorial
+            'tutorial_completed': False,
         }
         if self.settings_file.exists():
             try:
