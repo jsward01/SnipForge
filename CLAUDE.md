@@ -374,10 +374,17 @@ python snipforge.py
 **Source files (in project folder):**
 - `snipforge.py` - Main application
 - `install.py` - Cross-platform installer
+- `build_installer.py` - Generates self-contained installer
+- `CLAUDE.md` - Project documentation
 - `SnipForge Icon.png` - App icon source
 - `SnipForge App Icon.ico` - App icon (ICO format)
 - `SnipForge-Tray Icon.ico` - Tray icon source
 - `SnipForge Logo-black copy.png` - Dark mode background
 - `SnipForge_Logo-white.png` - Light mode background
 
-**Next steps:** Windows compatibility for snipforge.py (platform detection for keyboard/clipboard)
+**Next steps:** Windows 11 compatibility
+- Add platform detection in snipforge.py
+- Use pynput for keyboard on Windows (instead of evdev)
+- Use pyperclip for clipboard on Windows (instead of wl-copy/wl-paste)
+- Update installer for Windows (Startup folder instead of systemd)
+- Test on Windows 11
