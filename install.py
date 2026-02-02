@@ -657,7 +657,30 @@ def install_files():
     print_verbose(f"Copied {SOURCE_FILES['main']} → {main_dest}")
 
     # Copy icons to config directory
-    if SOURCE_FILES["icon_png"].exists():
+    # For app icon, prefer the ICO file and convert to PNG for Linux compatibility
+    if SOURCE_FILES["icon_ico"].exists():
+        dest = CONFIG_DIR / "app_icon.png"
+        try:
+            from PIL import Image
+            img = Image.open(SOURCE_FILES["icon_ico"])
+            # Get the largest size from the ICO file
+            img.seek(0)
+            largest = img
+            for i in range(getattr(img, 'n_frames', 1)):
+                img.seek(i)
+                if img.size[0] > largest.size[0]:
+                    largest = img.copy()
+            # Convert to RGBA and save as PNG
+            largest = largest.convert("RGBA")
+            largest.save(dest, "PNG")
+            print_verbose(f"Converted {SOURCE_FILES['icon_ico'].name} → {dest}")
+        except Exception as e:
+            print_verbose(f"Could not convert ICO to PNG: {e}")
+            # Fall back to copying the old PNG if it exists
+            if SOURCE_FILES["icon_png"].exists():
+                shutil.copy2(SOURCE_FILES["icon_png"], dest)
+                print_verbose(f"Copied {SOURCE_FILES['icon_png'].name} → {dest}")
+    elif SOURCE_FILES["icon_png"].exists():
         dest = CONFIG_DIR / "app_icon.png"
         shutil.copy2(SOURCE_FILES["icon_png"], dest)
         print_verbose(f"Copied {SOURCE_FILES['icon_png'].name} → {dest}")
