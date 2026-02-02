@@ -907,22 +907,29 @@ WantedBy=graphical-session.target
 
 
 def setup_input_group():
-    """Add user to input group for evdev access (Linux/Wayland only)."""
+    """Add user to input group for evdev access (Linux/Wayland only).
+
+    Returns:
+        'already' - user was already in the group
+        'added' - user was just added (needs logout)
+        'skipped' - user declined or error occurred
+        None - not applicable (Windows)
+    """
     if IS_WINDOWS:
-        return
+        return None
 
     print_step("Checking input group membership...")
 
     username = os.environ.get("USER", os.environ.get("LOGNAME"))
     if not username:
         print_warning("Could not determine username, skipping input group setup")
-        return
+        return 'skipped'
 
     # Check if already in input group
     result = run_command(["groups", username], check=False)
     if result.returncode == 0 and "input" in result.stdout:
         print_info("User already in 'input' group")
-        return
+        return 'already'
 
     print_info("Adding user to 'input' group for Wayland keyboard access...")
     print_info("This requires sudo and you'll need to log out/in for it to take effect.")
@@ -931,12 +938,14 @@ def setup_input_group():
         try:
             run_command(["usermod", "-aG", "input", username], sudo=True)
             print_success(f"User '{username}' added to 'input' group")
-            print_warning("You must log out and back in for this to take effect!")
+            return 'added'
         except subprocess.CalledProcessError:
             print_warning("Failed to add user to input group")
             print_info("You can manually run: sudo usermod -aG input $USER")
+            return 'skipped'
     else:
         print_info("Skipped. You can manually run: sudo usermod -aG input $USER")
+        return 'skipped'
 
 
 def enable_service():
@@ -1692,7 +1701,7 @@ def install_linux():
     create_systemd_service()
 
     # Setup input group for Wayland
-    setup_input_group()
+    input_group_status = setup_input_group()
 
     # Enable service
     enable_service()
@@ -1704,6 +1713,18 @@ def install_linux():
     print_header("Installation Complete!")
     print_success(f"{APP_DISPLAY_NAME} has been installed successfully!")
     print()
+
+    # Show prominent warning if user was just added to input group
+    if input_group_status == 'added':
+        print()
+        print(f"{Colors.BOLD}{Colors.YELLOW}{'=' * 60}{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.YELLOW}  IMPORTANT: LOG OUT AND BACK IN BEFORE USING!{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.YELLOW}{'=' * 60}{Colors.RESET}")
+        print()
+        print(f"{Colors.YELLOW}  You were added to the 'input' group for keyboard access.{Colors.RESET}")
+        print(f"{Colors.YELLOW}  SnipForge will NOT work until you log out and back in.{Colors.RESET}")
+        print()
+
     print_info("You can start it from:")
     print(f"    - Application menu: {APP_DISPLAY_NAME}")
     print(f"    - Command line: {BIN_LINK}")
