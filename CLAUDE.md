@@ -11,10 +11,40 @@ SnipForge is a GUI-based text expansion tool for Linux. It's a single-file Pytho
 **Recommended: Use the installer**
 ```bash
 cd Documents/Syncthing/SnipForge
-python install.py install      # Interactive install
-python install.py --yes install  # Non-interactive (auto-yes)
-python install.py uninstall    # Uninstall
-python install.py status       # Check installation status
+python install.py install       # Interactive install
+python install.py --yes install # Non-interactive (auto-yes)
+python install.py uninstall     # Uninstall
+python install.py update        # Update to latest version
+python install.py status        # Check installation status
+python install.py version       # Show version info
+```
+
+**Backup and Restore:**
+```bash
+python install.py backup        # Backup configuration
+python install.py backup --list # List available backups
+python install.py restore       # Restore from latest backup
+python install.py restore file  # Restore from specific backup
+```
+
+**Import/Export Snippets:**
+```bash
+python install.py export              # Export snippets to JSON
+python install.py export mysnips.json # Export to specific file
+python install.py import file.json    # Import snippets (merge)
+python install.py import file.json --replace  # Replace all snippets
+```
+
+**Other Options:**
+```bash
+python install.py deps          # Install dependencies only
+python install.py -v install    # Verbose installation
+```
+
+**Self-Contained Installer:**
+```bash
+python build_installer.py       # Creates snipforge_installer.py
+# Then distribute snipforge_installer.py - it contains everything
 ```
 
 **Supported Linux distributions:**
@@ -27,10 +57,13 @@ python install.py status       # Check installation status
 **Installation paths:**
 - Application: `~/.local/share/snipforge/snipforge.py`
 - Config/data: `~/.config/snipforge/`
+- Backups: `~/.local/share/snipforge/backups/`
 - Launcher: `~/.local/bin/snipforge`
 - Desktop entry: `~/.local/share/applications/snipforge.desktop`
 - Autostart: `~/.config/autostart/snipforge.desktop`
 - Systemd service: `~/.config/systemd/user/snipforge.service`
+
+**GitHub Repository:** https://github.com/jsward01/SnipForge
 
 ## Running the Application (Manual)
 
@@ -71,12 +104,12 @@ python snipforge.py
 
 ## Current Work
 
-**Status:** In progress
+**Status:** Completed
 
 **Last worked on:** Cross-platform Linux installer
 
 **What was done (Feb 2026):**
-- Created `install.py` - cross-platform Python installer:
+- Created `install.py` - cross-platform Python installer with full feature set:
   - Auto-detects Linux distribution family (Arch, Debian, Fedora)
   - Installs system dependencies via appropriate package manager (pacman, apt, dnf)
   - Falls back to pip if system packages unavailable
@@ -86,8 +119,24 @@ python snipforge.py
   - Optionally adds user to `input` group for Wayland keyboard access
   - Colored terminal output with progress indicators
   - `--yes` flag for non-interactive/scripted installs
+  - `-v/--verbose` flag for detailed output
   - `status` command to check installation state
   - `uninstall` command with option to preserve config/snippets
+  - `update` command to update to latest version (with optional backup)
+  - `version` command shows installed/source/GitHub versions
+  - `backup` command creates timestamped tarball of config
+  - `backup --list` shows available backups
+  - `restore` command restores from backup
+  - `export` command exports snippets to JSON
+  - `import` command imports snippets (merge or replace modes)
+  - `deps` command installs dependencies only
+- Created `build_installer.py` - generates self-contained installer:
+  - Bundles snipforge.py, install.py, and all assets into single file
+  - Base64 encodes all files for embedding
+  - Output: `snipforge_installer.py` (~4.8 MB) can be distributed standalone
+- Set up GitHub repository at https://github.com/jsward01/SnipForge
+  - Created v1.0.0 release
+  - Version checking against GitHub releases API
 
 **What was done (Jan 2026):**
 - Fixed `{{clipboard}}` to support images:
