@@ -728,6 +728,22 @@ exec python3 "{INSTALL_DIR / 'snipforge.py'}" "$@"
     print_success(f"Launcher created at {BIN_LINK}")
 
 
+def find_pythonw():
+    """Locate pythonw.exe for windowless execution (Windows only).
+
+    Uses sys.executable rather than PATH lookups: on Windows, `python`/`pythonw`
+    on PATH may resolve to the Microsoft Store's App Execution Alias stub
+    (present even when no real Python is installed), which silently exits
+    without running the target script. sys.executable is the interpreter
+    actually running this installer, so it is guaranteed to be real.
+    """
+    exe_dir = Path(sys.executable).parent
+    pythonw = exe_dir / "pythonw.exe"
+    if pythonw.exists():
+        return str(pythonw)
+    return sys.executable
+
+
 def create_start_menu_shortcut():
     """Create Start Menu shortcut (Windows only)."""
     if not IS_WINDOWS:
@@ -735,14 +751,7 @@ def create_start_menu_shortcut():
 
     print_step("Creating Start Menu shortcut...")
 
-    # Find pythonw.exe for windowless execution
-    python_exe = shutil.which("pythonw")
-    if not python_exe:
-        python_exe = shutil.which("python")
-
-    if not python_exe:
-        print_warning("Could not find Python executable")
-        return
+    python_exe = find_pythonw()
 
     target = f'"{python_exe}" "{INSTALL_DIR / "snipforge.py"}"'
     icon = CONFIG_DIR / "app_icon.ico"
@@ -787,14 +796,7 @@ def create_startup_shortcut():
 
     print_step("Creating Startup shortcut...")
 
-    # Find pythonw.exe for windowless execution
-    python_exe = shutil.which("pythonw")
-    if not python_exe:
-        python_exe = shutil.which("python")
-
-    if not python_exe:
-        print_warning("Could not find Python executable")
-        return
+    python_exe = find_pythonw()
 
     icon = CONFIG_DIR / "app_icon.ico"
 
@@ -1631,7 +1633,7 @@ def install_windows():
     # Offer to start now
     if prompt_yes_no(f"Start {APP_DISPLAY_NAME} now?", default=True):
         try:
-            python_exe = shutil.which("pythonw") or shutil.which("python")
+            python_exe = find_pythonw()
             subprocess.Popen(
                 [python_exe, str(INSTALL_DIR / "snipforge.py")],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
