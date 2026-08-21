@@ -7366,9 +7366,9 @@ class MainWindow(QMainWindow):
         
         # Create tray menu
         tray_menu = QMenu()
-        show_action = QAction("Show Window", self)
+        show_action = QAction("Open SnipForge", self)
         show_action.triggered.connect(self.show)
-        quit_action = QAction("Quit", self)
+        quit_action = QAction("Quit SnipForge", self)
         quit_action.triggered.connect(self.quit_application)
         
         tray_menu.addAction(show_action)
@@ -7491,6 +7491,12 @@ class MainWindow(QMainWindow):
         if dialog.dont_show_again or result == QDialog.Accepted:
             self.settings['tutorial_completed'] = True
             self.save_settings()
+
+        # Finishing the tutorial ("Open SnipForge") should actually open the window
+        if result == QDialog.Accepted:
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def load_snippets(self):
         """Load snippets from config file (backward compatible with folder field)"""
@@ -9851,26 +9857,50 @@ class MainWindow(QMainWindow):
                     # On Windows, use win32clipboard for HTML format
                     import win32clipboard
 
-                    # Windows HTML clipboard format requires specific header
-                    html_header = """Version:0.9
-StartHTML:00000097
-EndHTML:{end_html:08d}
-StartFragment:00000133
-EndFragment:{end_fragment:08d}
-<html><body>
-<!--StartFragment-->{html}<!--EndFragment-->
-</body></html>"""
-
-                    fragment = html_content
-                    html_formatted = html_header.format(
-                        html=fragment,
-                        end_html=97 + 36 + len(fragment) + 36,
-                        end_fragment=133 + len(fragment)
+                    # Build the CF_HTML header with correctly computed byte offsets.
+                    # StartHTML/EndHTML/StartFragment/EndFragment are byte offsets into
+                    # the UTF-8 encoded buffer (per the CF_HTML spec) - they are NOT
+                    # fixed constants. Fixed-width zero-padded numbers keep the header's
+                    # byte length identical between the offset-calculation pass and the
+                    # final pass, so the two stay in sync regardless of fragment content.
+                    header_template = (
+                        "Version:0.9\r\n"
+                        "StartHTML:{:09d}\r\n"
+                        "EndHTML:{:09d}\r\n"
+                        "StartFragment:{:09d}\r\n"
+                        "EndFragment:{:09d}\r\n"
+                        "<html><body>\r\n<!--StartFragment-->"
                     )
+                    footer = "<!--EndFragment-->\r\n</body></html>"
+
+                    header_len = len(header_template.format(0, 0, 0, 0).encode('utf-8'))
+                    fragment_bytes = html_content.encode('utf-8')
+                    footer_bytes = footer.encode('utf-8')
+
+                    start_html = 0
+                    start_fragment = header_len
+                    end_fragment = start_fragment + len(fragment_bytes)
+                    end_html = end_fragment + len(footer_bytes)
+
+                    html_formatted = (
+                        header_template.format(start_html, end_html, start_fragment, end_fragment)
+                        + html_content + footer
+                    )
+
+                    # Derive a plain-text fallback so apps that don't understand
+                    # CF_HTML (e.g. Notepad) still receive pasteable text.
+                    plain_text = html_content
+                    plain_text = re.sub(r'<br\s*/?>', '\n', plain_text, flags=re.IGNORECASE)
+                    plain_text = re.sub(r'</(p|li|div|tr)>', '\n', plain_text, flags=re.IGNORECASE)
+                    plain_text = re.sub(r'<[^>]+>', '', plain_text)
+                    plain_text = (plain_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                                  .replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"'))
+                    plain_text = plain_text.strip('\n')
 
                     win32clipboard.OpenClipboard()
                     win32clipboard.EmptyClipboard()
-                    # CF_HTML = 49429 is the standard Windows HTML clipboard format
+                    win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, plain_text)
+                    # CF_HTML is a dynamically registered format (not a fixed constant)
                     win32clipboard.SetClipboardData(
                         win32clipboard.RegisterClipboardFormat("HTML Format"),
                         html_formatted.encode('utf-8')
@@ -9884,13 +9914,9 @@ EndFragment:{end_fragment:08d}
                     press_ctrl_v()
                     time.sleep(0.4)
 
-                    # Cleanup
-                    kb = get_keyboard_controller()
-                    kb.press(Key.esc)
-                    kb.release(Key.esc)
-                    time.sleep(0.1)
-                    kb.press(Key.end)
-                    kb.release(Key.end)
+                    # No Escape/End cleanup here: unlike an auto-selected pasted image,
+                    # pasted text/list content is never left selected, and sending Escape
+                    # in some apps (e.g. Gmail compose) closes/discards the window instead.
 
                 except ImportError:
                     # Fallback: just paste as plain text
@@ -9984,6 +10010,15 @@ def disable_kde_blur(widget):
 
 
 def main():
+    if IS_WINDOWS:
+        # Set an explicit AppUserModelID so Windows attributes tray notifications
+        # to "SnipForge" instead of the "Python"/"pythonw" host executable.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SnipForge.TextExpander")
+        except Exception:
+            pass
+
     # Single instance check (cross-platform)
     lock_handle = None
 
