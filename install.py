@@ -42,6 +42,10 @@ APP_NAME = "snipforge"
 APP_DISPLAY_NAME = "SnipForge"
 APP_DESCRIPTION = "Forge your snippets - Quick text expansion tool"
 APP_VERSION = "1.0.0"
+# Must match the AUMID snipforge.py passes to SetCurrentProcessExplicitAppUserModelID.
+# Windows only shows a proper name/icon for tray notifications from an AUMID that is
+# "registered" via a Start Menu shortcut carrying this same AppUserModelID property.
+APP_AUMID = "SnipForge.TextExpander"
 GITHUB_REPO = "jsward01/SnipForge"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -728,6 +732,39 @@ exec python3 "{INSTALL_DIR / 'snipforge.py'}" "$@"
     print_success(f"Launcher created at {BIN_LINK}")
 
 
+def set_shortcut_aumid(shortcut_path, aumid):
+    """Stamp a .lnk file with an AppUserModelID (Windows only).
+
+    Windows only shows a real name/icon for a process's toast/tray
+    notifications if the AUMID that process registers via
+    SetCurrentProcessExplicitAppUserModelID is also attached to a Start
+    Menu shortcut - otherwise it just prints the raw AUMID string with a
+    generic icon. This sets that property directly on the shortcut's
+    property store (independent of how the .lnk was originally created).
+    """
+    try:
+        import pythoncom
+        from win32com.shell import shell
+        from win32com.propsys import propsys, pscon
+
+        shell_link = pythoncom.CoCreateInstance(
+            shell.CLSID_ShellLink, None,
+            pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
+        )
+        persist_file = shell_link.QueryInterface(pythoncom.IID_IPersistFile)
+        persist_file.Load(shortcut_path)
+
+        prop_store = shell_link.QueryInterface(propsys.IID_IPropertyStore)
+        prop_store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(aumid))
+        prop_store.Commit()
+
+        persist_file.Save(shortcut_path, True)
+        return True
+    except Exception as e:
+        print_warning(f"Could not set shortcut AppUserModelID: {e}")
+        return False
+
+
 def find_pythonw():
     """Locate pythonw.exe for windowless execution (Windows only).
 
@@ -782,6 +819,7 @@ $Shortcut.Save()
                 ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
                 capture_output=True, text=True
             )
+            set_shortcut_aumid(str(START_MENU_SHORTCUT), APP_AUMID)
             print_success(f"Start Menu shortcut created")
         except Exception as e:
             print_warning(f"Failed to create Start Menu shortcut: {e}")
@@ -817,6 +855,7 @@ $Shortcut.Save()
             capture_output=True, text=True
         )
         if result.returncode == 0:
+            set_shortcut_aumid(str(STARTUP_SHORTCUT), APP_AUMID)
             print_success(f"Startup shortcut created (auto-start enabled)")
         else:
             print_warning("Failed to create Startup shortcut")
