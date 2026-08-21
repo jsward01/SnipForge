@@ -2685,6 +2685,26 @@ class SnippetEditorWidget(QWidget):
         """)
         button_layout.addWidget(preview_btn)
 
+        clear_btn = QPushButton("Clear Form")
+        clear_btn.setToolTip("Clear all fields to start a new snippet")
+        clear_btn.clicked.connect(self.on_clear_form)
+        clear_btn.setMinimumWidth(100)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #B0B0B0;
+                border: 2px solid #616161;
+            }
+            QPushButton:hover {
+                background-color: #2A2A2A;
+                border-color: #9E9E9E;
+            }
+            QPushButton:pressed {
+                background-color: #1E1E1E;
+            }
+        """)
+        button_layout.addWidget(clear_btn)
+
         self.save_btn = QPushButton("Save")
         self.save_btn.clicked.connect(self.on_save)
         self.save_btn.setMinimumWidth(100)
@@ -4918,6 +4938,11 @@ class SnippetEditorWidget(QWidget):
     def on_cancel(self):
         """Handle cancel/back button click"""
         self.cancel_requested.emit()
+
+    def on_clear_form(self):
+        """Clear all fields to start a fresh new snippet"""
+        self.load_snippet()
+        self.trigger_input.setFocus()
 
     def show_preview(self):
         """Show a preview of the snippet with rendered form fields"""
