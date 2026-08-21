@@ -746,13 +746,16 @@ def set_shortcut_aumid(shortcut_path, aumid):
         import pythoncom
         from win32com.shell import shell
         from win32com.propsys import propsys, pscon
+        from win32com.storagecon import STGM_READWRITE
 
         shell_link = pythoncom.CoCreateInstance(
             shell.CLSID_ShellLink, None,
             pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
         )
         persist_file = shell_link.QueryInterface(pythoncom.IID_IPersistFile)
-        persist_file.Load(shortcut_path)
+        # Must open read-write (Load defaults to read-only), or Save() below
+        # fails with E_ACCESSDENIED.
+        persist_file.Load(shortcut_path, STGM_READWRITE)
 
         prop_store = shell_link.QueryInterface(propsys.IID_IPropertyStore)
         prop_store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(aumid))
