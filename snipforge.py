@@ -13,7 +13,7 @@ Install (Linux):
     # Then log out and back in
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.5"
 
 import sys
 import json
@@ -340,6 +340,71 @@ def press_ctrl_v():
         return True
     else:
         return run_ydotool('key', '29:1', '47:1', '47:0', '29:0')
+
+
+def save_system_clipboard():
+    """Best-effort snapshot of the current system clipboard, so it can be
+    restored after the app temporarily overwrites it to paste an inline
+    image or HTML/table via Ctrl+V. Returns an opaque platform-specific
+    token (or None if nothing could be captured)."""
+    if IS_WINDOWS:
+        try:
+            import win32clipboard
+            saved = []
+            win32clipboard.OpenClipboard()
+            try:
+                fmt = 0
+                while True:
+                    fmt = win32clipboard.EnumClipboardFormats(fmt)
+                    if fmt == 0:
+                        break
+                    try:
+                        saved.append((fmt, win32clipboard.GetClipboardData(fmt)))
+                    except Exception:
+                        pass
+            finally:
+                win32clipboard.CloseClipboard()
+            return saved
+        except Exception:
+            return None
+    elif IS_LINUX:
+        # wl-clipboard has no "snapshot every format" API -- each wl-copy
+        # invocation claims sole ownership of the selection, so a full
+        # multi-format backup isn't practical. Preserve plain text, the
+        # overwhelmingly common case for what's on the clipboard.
+        try:
+            return pyperclip.paste()
+        except Exception:
+            return None
+    return None
+
+
+def restore_system_clipboard(saved):
+    """Restore a snapshot captured by save_system_clipboard(). Best-effort:
+    failures are swallowed since losing the restore is better than crashing
+    mid-expansion."""
+    if saved is None:
+        return
+    if IS_WINDOWS:
+        try:
+            import win32clipboard
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                for fmt, data in saved:
+                    try:
+                        win32clipboard.SetClipboardData(fmt, data)
+                    except Exception:
+                        pass
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception:
+            pass
+    elif IS_LINUX:
+        try:
+            pyperclip.copy(saved)
+        except Exception:
+            pass
 
 
 class SnippetDialog(QDialog):
@@ -1329,14 +1394,40 @@ class SnippetFormDialog(QDialog):
                     color: #BBBBBB;
                 }
             """)
+            popup_calendar = date_edit.calendarWidget()
             if IS_WINDOWS:
-                # Windows' native style only partially respects QCalendarWidget
-                # stylesheets (parts of the day grid/header keep native colors,
-                # producing a mismatched, hard-to-read result). Fusion respects
-                # the stylesheet fully. Linux/X11 is unaffected either way.
-                popup_calendar = date_edit.calendarWidget()
-                if popup_calendar:
-                    popup_calendar.setStyle(QStyleFactory.create('Fusion'))
+                # Windows' native calendar chrome only partially respects the
+                # QSS above (see show_calendar_dialog for the full story) --
+                # these explicit format calls patch the two worst symptoms.
+                # Linux's default style already renders this correctly from
+                # the stylesheet alone, so keep this Windows-only to avoid
+                # changing the Linux app's behavior.
+                #
+                # Hide the ISO week-number column (Qt shows it by default) --
+                # it's not something this app uses and was rendering as a
+                # stray column of unstyled numbers on the left.
+                popup_calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+                # Qt colors weekday/weekend header text from the palette by
+                # default, which reads as mismatched/low-contrast against this
+                # light popup. Give both an explicit, readable, theme-matched color.
+                weekday_format = QTextCharFormat()
+                weekday_format.setForeground(QColor("#333333"))
+                for day in (Qt.Monday, Qt.Tuesday, Qt.Wednesday, Qt.Thursday, Qt.Friday):
+                    popup_calendar.setWeekdayTextFormat(day, weekday_format)
+                weekend_format = QTextCharFormat()
+                weekend_format.setForeground(QColor("#E65100"))
+                popup_calendar.setWeekdayTextFormat(Qt.Saturday, weekend_format)
+                popup_calendar.setWeekdayTextFormat(Qt.Sunday, weekend_format)
+            # NOTE: deliberately not forcing a Fusion QStyle here to make the
+            # native Windows style fully respect the QSS above. Combining
+            # setStyle() with setStyleSheet() on the same widget makes Qt wrap
+            # the custom style in an internal QStyleSheetStyle proxy whose
+            # C++-side ownership of that style object isn't tracked by
+            # Python's refcounting -- it crashes the app (access violation)
+            # once the widget is torn down. The vertical-header and
+            # weekday-text-format calls above cover the actual complaint
+            # (stray week-number column, hard-to-read header text) without
+            # touching the widget's style at all.
             self.form_fields[field_id] = {'type': field_type, 'widget': date_edit, 'match': full_match, 'name': name}
             return date_edit
 
@@ -4680,64 +4771,228 @@ class SnippetEditorWidget(QWidget):
         self.insert_variable('{{time}}')
 
     def show_calendar_dialog(self):
-        """Show calendar dialog to select a date"""
+        """Show calendar dialog to select a date.
+
+        This is a self-drawn grid rather than QCalendarWidget. The native
+        widget's header/corner-button chrome (background gradients baked
+        into the Windows and Fusion styles) does not fully yield to
+        stylesheets -- several rounds of QSS targeting QHeaderView,
+        QHeaderView::section, and QTableCornerButton still left a stray
+        light background behind the weekday names on Windows. Painting the
+        grid ourselves with plain QLabel/QPushButton widgets sidesteps that
+        entirely, since there's no native chrome left to fight.
+        """
         main_window = self.window()
         dialog = QDialog(main_window)
         dialog.setWindowTitle("Select Date")
-        dialog.setMinimumSize(350, 300)
+        dialog.setMinimumSize(400, 290)
         dialog.setAttribute(Qt.WA_TranslucentBackground, False)
-        dialog.setStyleSheet("""
-            QDialog {
-                background-color: #121212;
-            }
-            QCalendarWidget {
-                background-color: #1E1E1E;
-                color: #E0E0E0;
-            }
-            QCalendarWidget QToolButton {
-                color: #E0E0E0;
-                background-color: #2A2A2A;
+
+        is_light = self.is_light_theme
+        dialog_bg = '#F5F5F5' if is_light else '#121212'
+        text_color = '#212121' if is_light else '#E0E0E0'
+        button_bg = '#E0E0E0' if is_light else '#2A2A2A'
+        button_hover_bg = '#EEEEEE' if is_light else '#3A3A3A'
+        disabled_color = '#BDBDBD' if is_light else '#555555'
+        weekend_color = '#E65100' if is_light else '#FF6B00'
+
+        dialog.setStyleSheet(f"QDialog {{ background-color: {dialog_bg}; }}")
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+
+        nav_bar = QHBoxLayout()
+        prev_btn = QPushButton("<")
+        next_btn = QPushButton(">")
+        month_label = QPushButton()
+        month_label.setFlat(True)
+        month_label.setCursor(Qt.PointingHandCursor)
+        month_label.setToolTip("Click to jump to a month/year")
+        nav_btn_style = f"""
+            QPushButton {{
+                background-color: {button_bg};
+                color: {text_color};
+                border: none;
+                border-radius: 4px;
+                padding: 0;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: {button_hover_bg}; }}
+        """
+        for btn in (prev_btn, next_btn):
+            btn.setFixedSize(32, 32)
+            btn.setStyleSheet(nav_btn_style)
+        month_label.setStyleSheet(f"""
+            QPushButton {{
+                color: {text_color};
+                background-color: transparent;
                 border: none;
                 border-radius: 4px;
                 padding: 4px 8px;
-            }
-            QCalendarWidget QToolButton:hover {
-                background-color: #3A3A3A;
-            }
-            QCalendarWidget QMenu {
-                background-color: #1E1E1E;
-                color: #E0E0E0;
-            }
-            QCalendarWidget QSpinBox {
-                background-color: #2A2A2A;
-                color: #E0E0E0;
-                border: 1px solid #424242;
-            }
-            QCalendarWidget QWidget#qt_calendar_navigationbar {
-                background-color: #2A2A2A;
-            }
-            QCalendarWidget QAbstractItemView:enabled {
-                background-color: #1E1E1E;
-                color: #E0E0E0;
-                selection-background-color: #FF6B00;
-                selection-color: white;
-            }
-            QCalendarWidget QAbstractItemView:disabled {
-                color: #555555;
-            }
+                font-size: 15px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: {button_hover_bg}; }}
         """)
+        nav_bar.addWidget(prev_btn)
+        nav_bar.addWidget(month_label, 1)
+        nav_bar.addWidget(next_btn)
+        layout.addLayout(nav_bar)
 
-        layout = QVBoxLayout(dialog)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(2)
+        for i, name in enumerate(('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat')):
+            lbl = QLabel(name)
+            lbl.setAlignment(Qt.AlignCenter)
+            color = weekend_color if i in (0, 6) else text_color
+            lbl.setStyleSheet(f"color: {color}; font-weight: bold; padding: 4px; background: transparent;")
+            header_row.addWidget(lbl)
+        layout.addLayout(header_row)
 
-        calendar = QCalendarWidget()
-        calendar.setGridVisible(True)
-        if IS_WINDOWS:
-            # Windows' native style only partially respects QCalendarWidget
-            # stylesheets (parts of the day grid/header keep native colors,
-            # producing a mismatched, hard-to-read result). Fusion respects
-            # the stylesheet fully. Linux/X11 is unaffected either way.
-            calendar.setStyle(QStyleFactory.create('Fusion'))
-        layout.addWidget(calendar)
+        grid = QGridLayout()
+        grid.setSpacing(2)
+        layout.addLayout(grid)
+
+        state = {'selected': QDate.currentDate()}
+        state['year'] = state['selected'].year()
+        state['month'] = state['selected'].month()
+        day_buttons = []
+
+        def add_day_button(d, cell, in_month):
+            row, col = divmod(cell, 7)
+            is_weekend = col in (0, 6)
+            is_selected = (d == state['selected'])
+            btn = QPushButton(str(d.day()))
+            btn.setFixedSize(46, 30)
+            if is_selected:
+                bg, fg, hover_bg = '#FF6B00', 'white', '#FF8C00'
+            else:
+                bg = 'transparent'
+                fg = disabled_color if not in_month else (weekend_color if is_weekend else text_color)
+                hover_bg = button_hover_bg
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {bg};
+                    color: {fg};
+                    border: none;
+                    border-radius: 4px;
+                    padding: 0;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{ background-color: {hover_bg}; }}
+            """)
+
+            def on_click(checked=False, dd=d):
+                state['selected'] = dd
+                state['year'], state['month'] = dd.year(), dd.month()
+                rebuild_grid()
+            btn.clicked.connect(on_click)
+            grid.addWidget(btn, row, col)
+            day_buttons.append(btn)
+
+        def rebuild_grid():
+            for btn in day_buttons:
+                grid.removeWidget(btn)
+                btn.deleteLater()
+            day_buttons.clear()
+
+            year, month = state['year'], state['month']
+            first_of_month = QDate(year, month, 1)
+            month_label.setText(first_of_month.toString("MMMM yyyy"))
+
+            start_offset = first_of_month.dayOfWeek() % 7  # Qt: Mon=1..Sun=7 -> Sun-first column index
+            days_in_month = first_of_month.daysInMonth()
+            prev_month_date = first_of_month.addMonths(-1)
+            days_in_prev = prev_month_date.daysInMonth()
+            next_month_date = first_of_month.addMonths(1)
+
+            cell = 0
+            for i in range(start_offset):
+                day_num = days_in_prev - start_offset + 1 + i
+                add_day_button(QDate(prev_month_date.year(), prev_month_date.month(), day_num), cell, False)
+                cell += 1
+            for day_num in range(1, days_in_month + 1):
+                add_day_button(QDate(year, month, day_num), cell, True)
+                cell += 1
+            for day_num in range(1, 42 - cell + 1):
+                add_day_button(QDate(next_month_date.year(), next_month_date.month(), day_num), cell, False)
+                cell += 1
+
+        def go_prev():
+            d = QDate(state['year'], state['month'], 1).addMonths(-1)
+            state['year'], state['month'] = d.year(), d.month()
+            rebuild_grid()
+
+        def go_next():
+            d = QDate(state['year'], state['month'], 1).addMonths(1)
+            state['year'], state['month'] = d.year(), d.month()
+            rebuild_grid()
+
+        def show_month_year_picker():
+            picker = QDialog(dialog)
+            picker.setWindowTitle("Go to Month")
+            picker.setAttribute(Qt.WA_TranslucentBackground, False)
+            picker.setStyleSheet(f"QDialog {{ background-color: {dialog_bg}; }}")
+
+            p_layout = QVBoxLayout(picker)
+            p_layout.setContentsMargins(16, 16, 16, 16)
+            p_layout.setSpacing(12)
+
+            row = QHBoxLayout()
+            month_combo = QComboBox()
+            month_combo.addItems(['January', 'February', 'March', 'April', 'May', 'June',
+                                   'July', 'August', 'September', 'October', 'November', 'December'])
+            month_combo.setCurrentIndex(state['month'] - 1)
+            year_spin = QSpinBox()
+            year_spin.setRange(1, 9999)
+            year_spin.setValue(state['year'])
+            field_style = f"""
+                QComboBox, QSpinBox {{
+                    background-color: {button_bg};
+                    color: {text_color};
+                    border: 1px solid {button_hover_bg};
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {button_bg};
+                    color: {text_color};
+                    selection-background-color: #FF6B00;
+                    selection-color: white;
+                }}
+            """
+            month_combo.setStyleSheet(field_style)
+            year_spin.setStyleSheet(field_style)
+            row.addWidget(month_combo, 1)
+            row.addWidget(year_spin)
+            p_layout.addLayout(row)
+
+            picker_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            picker_buttons.accepted.connect(picker.accept)
+            picker_buttons.rejected.connect(picker.reject)
+            picker_buttons.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF6B00;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 14px;
+                    min-width: 70px;
+                }
+                QPushButton:hover { background-color: #FF8C00; }
+            """)
+            p_layout.addWidget(picker_buttons)
+
+            if picker.exec_() == QDialog.Accepted:
+                state['month'] = month_combo.currentIndex() + 1
+                state['year'] = year_spin.value()
+                rebuild_grid()
+
+        month_label.clicked.connect(show_month_year_picker)
+        prev_btn.clicked.connect(go_prev)
+        next_btn.clicked.connect(go_next)
+        rebuild_grid()
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
@@ -4758,7 +5013,7 @@ class SnippetEditorWidget(QWidget):
         layout.addWidget(button_box)
 
         if dialog.exec_() == QDialog.Accepted:
-            selected_date = calendar.selectedDate().toString("MM-dd-yyyy")
+            selected_date = state['selected'].toString("MM-dd-yyyy")
             self.insert_variable(selected_date)
 
     def insert_text_field_dialog(self):
@@ -5714,7 +5969,7 @@ class SettingsDialog(QDialog):
         self.settings = current_settings or {}
         self.parent_window = parent
         self.setWindowTitle("Settings")
-        self.setMinimumSize(550, 500)
+        self.setMinimumSize(550, 585)
 
         # Detect current theme from parent window
         self.is_light_theme = False
@@ -6030,6 +6285,13 @@ class SettingsDialog(QDialog):
         self.parent_window.update_background_label()
         self.parent_window.refresh_tree()
 
+        # This dialog is modal and sitting on top of the main window while
+        # this runs, so the main window's own repaint isn't guaranteed to be
+        # serviced promptly -- ask for one now instead of leaving the
+        # background watermark/theme showing stale content until something
+        # else forces a repaint, like closing and reopening the window.
+        self.parent_window.update()
+
         # Update this dialog's theme if theme changed
         new_theme = new_settings.get('theme', 'Dark')
         new_is_light = (new_theme == 'Light')
@@ -6052,11 +6314,45 @@ class SettingsDialog(QDialog):
         else:
             self.setStyleSheet(self.get_dark_stylesheet())
             self.auto_save_label.setStyleSheet("color: #888888; font-size: 12px; font-style: italic;")
+        self.update_appearance_tab_theme()
+
+    def update_appearance_tab_theme(self):
+        """Re-color the Appearance tab's scroll area for the current theme.
+
+        These two widgets carry an explicit background-color (set directly
+        on them, not inherited from the dialog's stylesheet) so the scroll
+        viewport doesn't default to a plain white background. Because it's
+        set directly on the widgets, re-applying the dialog-level stylesheet
+        in update_dialog_theme() above doesn't touch it -- it has to be
+        updated here explicitly too, or a live theme switch leaves this tab
+        showing the old theme's background until the dialog is reopened.
+        """
+        tab_bg = "#F5F5F5" if self.is_light_theme else "#1E1E1E"
+        self.appearance_scroll.setStyleSheet(f"QScrollArea {{ background-color: {tab_bg}; border: none; }}")
+        self.appearance_scroll.viewport().setStyleSheet(f"background-color: {tab_bg};")
+        self.appearance_content.setStyleSheet(f"background-color: {tab_bg};")
 
     def create_appearance_tab(self):
         """Create the Appearance settings tab"""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        # This tab's content (Theme + Background + Editor Font groups) doesn't
+        # always fit in the dialog's minimum height -- when squeezed, rows in
+        # the Background group compressed into each other instead of the
+        # dialog just growing. Scrolling instead of compressing keeps rows
+        # readable at any dialog size/DPI.
+        self.appearance_scroll = QScrollArea()
+        scroll = self.appearance_scroll
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        self.appearance_content = QWidget()
+        content = self.appearance_content
+        self.update_appearance_tab_theme()
+        layout = QVBoxLayout(content)
         layout.setSpacing(16)
         layout.setContentsMargins(16, 16, 16, 16)
 
@@ -6170,6 +6466,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(font_group)
 
         layout.addStretch()
+
+        scroll.setWidget(content)
+        tab_layout.addWidget(scroll)
         self.tabs.addTab(tab, "Appearance")
 
     def create_behavior_tab(self):
@@ -9748,6 +10047,7 @@ class MainWindow(QMainWindow):
     
     def paste_image(self, image_path):
         """Copy image to clipboard and paste it"""
+        saved_clipboard = None
         try:
             # Verify the image file exists
             if not Path(image_path).exists():
@@ -9755,6 +10055,11 @@ class MainWindow(QMainWindow):
                 return
 
             print(f"Pasting image: {image_path}")
+
+            # Pasting an image means overwriting the system clipboard, which
+            # would otherwise silently destroy whatever the user had copied.
+            # Snapshot it now so it can be put back once the paste is done.
+            saved_clipboard = save_system_clipboard()
 
             if IS_LINUX:
                 # Linux/Wayland: Use wl-copy
@@ -9858,6 +10163,8 @@ class MainWindow(QMainWindow):
             print(f"Error pasting image: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            restore_system_clipboard(saved_clipboard)
 
     def paste_table(self, cols, rows):
         """Create and paste an HTML table that word processors convert to native tables"""
@@ -9883,8 +10190,13 @@ class MainWindow(QMainWindow):
 
     def paste_html(self, html_content):
         """Paste HTML content so word processors convert it to native formatting"""
+        saved_clipboard = None
         try:
             print(f"Pasting HTML content")
+
+            # Same as paste_image(): this overwrites the system clipboard to
+            # paste via Ctrl+V, so snapshot it first and restore it below.
+            saved_clipboard = save_system_clipboard()
 
             if IS_LINUX:
                 try:
@@ -9997,6 +10309,8 @@ class MainWindow(QMainWindow):
             print(f"Error pasting HTML: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            restore_system_clipboard(saved_clipboard)
 
     def type_text(self, text):
         """Type text using clipboard paste (cross-platform)"""
@@ -10018,8 +10332,14 @@ class MainWindow(QMainWindow):
             return
 
         # Use clipboard for faster typing
+        saved_clipboard = None
         try:
-            old_clipboard = pyperclip.paste()
+            # save_system_clipboard()/restore_system_clipboard() (not a plain
+            # pyperclip.paste()/copy() round-trip) so this survives the
+            # user's original clipboard being an image or other non-text
+            # format -- pyperclip.paste() would silently return '' for
+            # those, permanently discarding them once restored.
+            saved_clipboard = save_system_clipboard()
             pyperclip.copy(text)
             time.sleep(0.1)  # Wait for clipboard to be ready
 
@@ -10029,10 +10349,11 @@ class MainWindow(QMainWindow):
             press_ctrl_v()
 
             time.sleep(0.15)
-            pyperclip.copy(old_clipboard)
         except:
             # Fallback to typing directly with ydotool
             ydotool_type(text)
+        finally:
+            restore_system_clipboard(saved_clipboard)
     
     def check_show_request(self):
         """Check if another instance is requesting to show the window"""
@@ -10132,6 +10453,25 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setDesktopFileName("snipforge")  # Match StartupWMClass in .desktop file
+
+    if IS_WINDOWS:
+        # Windows' native "windowsvista" style only partially respects Qt
+        # stylesheets -- it's why heavily-styled widgets like QCalendarWidget
+        # look mismatched/unfinished on Windows but fine on Linux (which
+        # normally defaults to Fusion or another stylesheet-friendly style).
+        # Fusion respects stylesheets fully, so set it as the app-wide base
+        # style to bring Windows in line with Linux.
+        #
+        # This must be set once here at the QApplication level, not per
+        # widget: calling widget.setStyle(QStyleFactory.create('Fusion')) on
+        # individual widgets (the calendar's own widget, say) crashes the app
+        # once that widget is torn down -- combining a per-widget custom
+        # QStyle with setStyleSheet() makes Qt wrap it in an internal
+        # QStyleSheetStyle proxy whose C++-side ownership of that style
+        # object isn't tracked by Python's refcounting. Setting it once here,
+        # before any widgets exist, doesn't have that hazard: the style is
+        # owned by QApplication for the whole process lifetime.
+        app.setStyle(QStyleFactory.create('Fusion'))
 
     # Configure tooltip styling at application level to avoid compositor transparency
     from PyQt5.QtGui import QPalette, QColor

@@ -117,9 +117,161 @@ python snipforge.py
 
 ## Current Work
 
-**Status:** Ready for Windows Testing
+**Status:** "Select Date" calendar confirmed matching the Linux version (dark and light
+mode). A code review (prompted by an independent finding from a separate Claude Code
+session exploring this same repo on another machine) turned up and fixed three more real
+bugs — see below. Installed version is now `1.1.5`. Nothing else is actively
+broken/in-flight.
 
-**Last worked on:** First-run tutorial implementation
+**Code-review fixes (Aug 2026, same round):**
+1. **Windows/Linux separation regression.** The date-picker (`{{name:date}}` field)
+   popup calendar's week-number-hiding and weekday/weekend coloring (added earlier this
+   round) had been applied unconditionally, but it replaced code that was explicitly
+   `if IS_WINDOWS:`-gated — so it was silently changing Linux's calendar rendering too,
+   violating [[feedback_snipforge_windows_separation]]. Re-gated behind `IS_WINDOWS`
+   (`snipforge.py` ~line 1332).
+2. **Clipboard-clobbering bug (confirmed independently by another Claude Code session's
+   exploration of this repo, and cross-checked line-for-line against its report).**
+   `paste_image()` and `paste_html()` (used for inline images, tables, and rich content
+   during snippet expansion) both overwrite the system clipboard via
+   `win32clipboard.EmptyClipboard()`/`wl-copy` to paste via Ctrl+V, but neither saved or
+   restored the clipboard's prior contents. Any snippet containing an image, table, or
+   rich content permanently destroyed whatever the user had copied before expanding it,
+   with no warning. Fixed by adding `save_system_clipboard()` / `restore_system_clipboard()`
+   helpers (~line 332, right after `press_ctrl_v()`) and wrapping both paste functions'
+   bodies in `try/finally` so the snapshot is restored even on error paths. Windows
+   restore is a full multi-format snapshot via `EnumClipboardFormats`; Linux/Wayland
+   restore is text-only (best-effort — wl-clipboard has no practical "snapshot every
+   format" API since each `wl-copy` invocation claims sole ownership of the selection).
+3. **Same clipboard bug, one more spot: `type_text()`.** The other session's report also
+   flagged a sequencing interaction: `type_content_with_embeds()` calls
+   `type_text(before) -> paste_image() -> type_text(after)` for mixed text/image
+   snippets, and `type_text()` had its *own* separate save/restore using raw
+   `pyperclip.paste()`/`copy()` (text-only). Once fix #2 lands, `paste_image()` correctly
+   restores the true clipboard before `type_text(after)` runs, which self-heals that
+   specific sequencing case -- but `type_text()`'s pyperclip-only save/restore still had
+   the identical root bug on its own: if the user's actual original clipboard held an
+   image (not text) at the moment expansion started, `pyperclip.paste()` returns `''` for
+   it, and `type_text()` would permanently discard it once restored. Fixed by switching
+   `type_text()` to the same `save_system_clipboard()`/`restore_system_clipboard()`
+   helpers (full-fidelity, not text-only), wrapped in `try/finally` (~line 10315).
+
+**Last worked on (Aug 2026):** Continuation of the Windows bug-fix round below. The
+"Select Date" dialog (`SnippetEditorWidget.show_calendar_dialog()`, opened via Dynamic
+Commands > Select Date) went through many rounds of trying to reskin Qt's native
+`QCalendarWidget` via stylesheets — it never fully worked, so it was replaced with a
+**hand-drawn calendar grid** (plain `QPushButton`/`QLabel` widgets we paint ourselves,
+no `QCalendarWidget` involved at all). All changes are in the repo copy
+(`C:\Users\JSWARD\SnipForge\snipforge.py`) and deployed to the installed copy
+(`C:\Users\JSWARD\AppData\Local\SnipForge\snipforge.py`, currently version `1.1.2`) via
+`install.py update`. **Nothing has been committed to git yet** — uncommitted on the
+`windows` branch, per instruction to only commit when asked.
+
+**Why the rewrite happened:** Several QSS rounds tried to fix a persistent white
+background behind the Mon–Fri weekday header labels (visible on-screen, not just in
+screenshots — confirmed by direct user observation, not just captures) by targeting
+`QHeaderView`, `QHeaderView::section` (including `background-image: none` to defeat a
+suspected baked-in native gradient), and `QTableCornerButton::section` (a separate
+corner-button widget that was the real source of an earlier, different white box behind
+"Sun"). None of it fully worked — native/Fusion header chrome on Windows doesn't fully
+yield to stylesheets. Rather than keep guessing at QSS selectors, `show_calendar_dialog`
+now builds its own grid: a `QHBoxLayout` nav bar (`<`/`>` buttons + a clickable
+month/year label), a `QHBoxLayout` weekday header of plain `QLabel`s, and a `QGridLayout`
+of `QPushButton`s for the day cells, all colored directly in Python from
+`self.is_light_theme` — no native calendar chrome left to fight, in either theme.
+
+**Screenshot debugging gotcha (worth remembering):** Several screenshots the user sent
+mid-session showed rainbow-colored numbers and white boxes that turned out to be
+artifacts of Windows' Snipping Tool "Live Text" / Text Actions overlay (Win+Shift+S),
+not the actual app rendering — proven by two screenshots of the *identical* dialog state
+(no code change in between) looking completely different. **When a screenshot shows
+implausible rendering (rainbow text, boxes with no plausible CSS source), ask the user
+to check the live screen directly before chasing it as a code bug** — but don't assume
+overlay-artifact just because it looks weird; in this same session a white-box report
+was dismissed once as likely overlay and turned out to be a real bug after user
+confirmed it live. Direct on-screen confirmation is the reliable tie-breaker.
+
+Feature added on top of the rewrite: clicking the "August 2026" label opens a small
+popup (`QComboBox` for month + `QSpinBox` for year, OK/Cancel) to jump long distances
+without repeatedly clicking `<`/`>` — mirrors the "common feature" the user asked for,
+similar to Qt's own native month-button/year-spinbox pattern.
+
+**The other calendar site** — `SnippetFormDialog`'s `{{name:date}}` field popup
+(`QDateEdit.calendarWidget()`, around line ~1275) — is still the old native
+`QCalendarWidget` with light-only QSS. It was never reported as visually broken (its
+fixed light styling happens to mostly survive native chrome), so it was **not**
+rewritten this round. If it turns out to have the same header/corner-button issue,
+apply the same hand-drawn-grid treatment there.
+
+**What still needs to be done:**
+- Nothing outstanding from this round — user confirmed the calendar "looks perfect."
+- Whenever the user is ready, commit the accumulated changes on the `windows` branch
+  (ask before committing, per standing instruction — [[feedback_snipforge_windows_separation]]).
+- Consider whether `SnippetFormDialog`'s date-picker popup calendar (still native
+  `QCalendarWidget`) should get the same custom-grid treatment for consistency, if it's
+  ever reported as looking off.
+
+**Previous work (Aug 2026, earlier in the same round):** Windows-specific crash and
+rendering fixes, found while the user was doing hands-on Windows testing.
+
+Fixes made, in order:
+1. **Crash executing any snippet with a `{{Name:date}}` field.** Root cause:
+   `date_edit.calendarWidget().setStyle(QStyleFactory.create('Fusion'))` — combining a
+   per-widget custom `QStyle` with `setStyleSheet()` on the same widget makes Qt wrap it
+   in an internal `QStyleSheetStyle` proxy whose C++-side ownership isn't tracked by
+   Python's refcounting; it crashes (access violation) once the widget is torn down, not
+   during use. Removed per-widget `setStyle()` calls entirely from both calendar sites.
+2. **Settings > Appearance > Background section overlapping/unreadable rows.** The
+   3-row block only overlapped when the dialog was squeezed toward its old 500px min
+   height; natural height needed ~533-571px. Wrapped the Appearance tab content in a
+   `QScrollArea` (so it can never compress/overlap again) and bumped
+   `setMinimumSize(550, 500)` → `(550, 585)`.
+3. **Calendar coloring/legibility + stray week-number column** (initial pass, later
+   superseded for the "Select Date" dialog by the full rewrite above).
+4. **Settings dialog not switching theme live** (dark→light needed a reopen to take
+   effect). Regression from fix #2: the scroll area's background color was computed once
+   at construction and never re-applied on live switch. Added
+   `update_appearance_tab_theme()`, called both at construction and from the existing
+   `update_dialog_theme()`.
+5. **Main window losing its background-image watermark after a live theme switch**
+   (fixed by full app restart). Added `self.parent_window.update()` at the end of
+   `SettingsDialog.apply_settings()` to force a repaint once the modal dialog stops
+   sitting on top of it. Deliberately did **not** add `QApplication.processEvents()`
+   alongside it — that hung the app reentrantly in testing.
+6. **Calendar looking completely different from the Linux version** (initial attempt: set
+   Fusion as the app-wide base style, `if IS_WINDOWS:` gated, in `main()` right after
+   `QApplication(sys.argv)` is constructed. This is still in place and is a reasonable
+   app-wide default, but it did **not** fully fix `QCalendarWidget` specifically — see the
+   rewrite above).
+
+**Key gotchas learned this round (worth remembering for future PyQt work here):**
+- Never call `widget.setStyle(customStyleObject)` on a widget that also has
+  `setStyleSheet()` applied — crashes at teardown. `QApplication.setStyle()` once at
+  startup is the safe equivalent.
+- `QCalendarWidget` is a poor fit for heavy re-theming on Windows — its header sections
+  and corner-button widget carry native style chrome that stylesheets can't fully strip.
+  For any calendar/date UI that needs to look identical across platforms, prefer building
+  it from plain widgets (`QPushButton`/`QLabel` in a `QGridLayout`) rather than fighting
+  the native widget's QSS.
+- `install.py update` compares the `__version__` string between the repo and installed
+  copies — it silently no-ops ("already latest") if you forget to bump it after editing.
+- In this shell environment, `install.py` needs `PYTHONUTF8=1` set or it crashes on a
+  `UnicodeDecodeError`/`UnicodeEncodeError` reading files / printing unicode symbols
+  (`ℹ`, `▶`, etc.) under the default cp1252 console codepage.
+- SnipForge is a tray app — closing the window does **not** quit the process
+  (`app.setQuitOnLastWindowClosed(False)`). Code changes only take effect after using
+  **"Quit SnipForge" from the tray icon's right-click menu**, then relaunching. This was
+  the cause of at least one "the fix didn't work" report that was actually just a stale
+  running process.
+- Custom `QPushButton` glyphs need plain ASCII-safe characters (`<`/`>`) — fancier
+  unicode (e.g. `‹`/`›` angle quotes) rendered as invisible/missing glyphs in this
+  environment's default UI font.
+- Small fixed-size `QPushButton`s need explicit `padding: 0;` in their stylesheet, or the
+  native style's default button padding can crush multi-character text (two-digit day
+  numbers were rendering squeezed/illegible in ~38px-wide buttons until padding was
+  zeroed and the buttons widened).
+
+**Previous work (Feb 2026):** First-run tutorial implementation
 
 **What was done (Feb 2026):**
 - Added first-run tutorial wizard:
