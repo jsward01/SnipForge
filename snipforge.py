@@ -13,7 +13,7 @@ Install (Linux):
     # Then log out and back in
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import sys
 import json
@@ -2672,18 +2672,38 @@ class SnippetEditorWidget(QWidget):
         preview_btn.setMinimumWidth(100)
         preview_btn.setStyleSheet("""
             QPushButton {
-                background-color: transparent;
+                background-color: #1A2A3A;
                 color: #4A90D9;
                 border: 2px solid #4A90D9;
             }
             QPushButton:hover {
-                background-color: #1A2A3A;
+                background-color: #234258;
             }
             QPushButton:pressed {
                 background-color: #0A1A2A;
             }
         """)
         button_layout.addWidget(preview_btn)
+
+        clear_btn = QPushButton("Clear Form")
+        clear_btn.setToolTip("Clear all fields to start a new snippet")
+        clear_btn.clicked.connect(self.on_clear_form)
+        clear_btn.setMinimumWidth(100)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2A2A2A;
+                color: #B0B0B0;
+                border: 2px solid #616161;
+            }
+            QPushButton:hover {
+                background-color: #383838;
+                border-color: #9E9E9E;
+            }
+            QPushButton:pressed {
+                background-color: #1E1E1E;
+            }
+        """)
+        button_layout.addWidget(clear_btn)
 
         self.save_btn = QPushButton("Save")
         self.save_btn.clicked.connect(self.on_save)
@@ -4918,6 +4938,11 @@ class SnippetEditorWidget(QWidget):
     def on_cancel(self):
         """Handle cancel/back button click"""
         self.cancel_requested.emit()
+
+    def on_clear_form(self):
+        """Clear all fields to start a fresh new snippet"""
+        self.load_snippet()
+        self.trigger_input.setFocus()
 
     def show_preview(self):
         """Show a preview of the snippet with rendered form fields"""
@@ -7491,6 +7516,12 @@ class MainWindow(QMainWindow):
         if dialog.dont_show_again or result == QDialog.Accepted:
             self.settings['tutorial_completed'] = True
             self.save_settings()
+
+        # Finishing the tutorial ("Open SnipForge") should actually open the window
+        if result == QDialog.Accepted:
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def load_snippets(self):
         """Load snippets from config file (backward compatible with folder field)"""
