@@ -117,13 +117,50 @@ python snipforge.py
 
 ## Current Work
 
-**Status:** "Select Date" calendar confirmed matching the Linux version (dark and light
-mode). A code review (prompted by an independent finding from a separate Claude Code
-session exploring this same repo on another machine) turned up and fixed three more real
-bugs — see below. Installed version is now `1.1.5`. Nothing else is actively
-broken/in-flight.
+**Status:** Session paused by user choice, not because anything is broken. User is
+installing `1.1.9` on their personal Windows 11 laptop for real-world daily use and will
+report back with any further bugs/issues found through actual usage. **Everything through
+`1.1.9` is committed** to the `windows` branch (commits `2117d1e` and `c98c340`) — ahead
+of `origin/windows` by 2 commits, not pushed (never push without being asked).
 
-**Code-review fixes (Aug 2026, same round):**
+**Known, accepted limitation:** Gmail's compose box still strips bold/underline
+formatting on paste (plain text pastes fine). Multiple approaches were tried — inline
+`style` attributes, then outer `<strong>`/`<em>`/`<span>` semantic wrappers around the
+existing `<b>`/`<i>`/`<u>` tags — neither survived Gmail's paste sanitizer. This is very
+likely an intentional/hardcoded stripping behavior on Gmail's end, not something
+diagnosable further from clipboard content alone without live access to Gmail's actual
+JS paste handler. User has accepted this as-is. If revisited: everything else (Proton
+Mail, Google Docs, LibreOffice Writer, Word/WordPad) now pastes correctly including
+formatting, so this is narrowly a Gmail-only gap.
+
+**Rich-text paste compatibility fixes (Aug 2026, this round, `1.1.6`-`1.1.9`):** Found
+through the user manually testing the `.new` snippet (bold + underline + numbered list +
+dropdown + date field) across real targets after the calendar/clipboard-clobbering work
+below. Summary (full detail in commit `c98c340`'s message):
+- LibreOffice Writer's CF_HTML import doesn't reliably honor the `StartFragment`/
+  `EndFragment` byte offsets and rendered the raw CF_HTML header as visible text. Added
+  an RTF clipboard alternative (`html_subset_to_rtf()` + `get_foreground_process_name()`,
+  ~line 410) that only activates when the foreground app is a real word processor
+  (`soffice.exe`/`soffice.bin`/`winword.exe`/`wordpad.exe`) — offering RTF
+  unconditionally regressed Gmail and Google Docs, since browsers prefer RTF over
+  CF_HTML when both are present but parse it much less robustly.
+- Google Docs rejected the whole paste; Gmail kept text but stripped `<b>`/`<u>`. Fixed
+  Docs by adding explicit inline `style` attributes to the existing tags (Docs' sanitizer
+  apparently distrusts bare presentational tags entirely and drops the whole payload
+  rather than degrading gracefully). Also tried the `<strong>`/`<em>`/`<span>` wrapper
+  approach for Gmail specifically — didn't work, see "known limitation" above.
+- Enter/Return in the snippet form dialog did nothing unless a plain-text field had
+  focus. `QComboBox`/`QDateEdit` (the 'dropdown'/'date_picker' field types) both consume
+  Return internally before `insert_btn.setDefault(True)`'s dialog-level handling ever
+  sees it. Fixed with a `keyPressEvent` override on `SnippetFormDialog` (~line 1639) that
+  submits on Enter from any field, except while a combo box's own popup is open.
+- **Debugging gotcha worth remembering:** when testing my own `html_subset_to_rtf()`
+  logic via a quick standalone script, I caught a real bug before deploying (list items
+  running together with no paragraph break) by actually executing the function against
+  sample input rather than just reading the code — worth doing for any new text/markup
+  transformation logic in this file, not just trusting a code read-through.
+
+**Earlier this same round — code-review fixes (Aug 2026):**
 1. **Windows/Linux separation regression.** The date-picker (`{{name:date}}` field)
    popup calendar's week-number-hiding and weekday/weekend coloring (added earlier this
    round) had been applied unconditionally, but it replaced code that was explicitly
