@@ -13,7 +13,7 @@ Install (Linux):
     # Then log out and back in
 """
 
-__version__ = "1.1.5"
+__version__ = "1.1.9"
 
 import sys
 import json
@@ -405,6 +405,95 @@ def restore_system_clipboard(saved):
             pyperclip.copy(saved)
         except Exception:
             pass
+
+
+# Executable names of desktop word processors known to prefer/require RTF
+# for reliable rich-text paste (see paste_html's use of this).
+RTF_PREFERRING_PROCESSES = {'soffice.exe', 'soffice.bin', 'winword.exe', 'wordpad.exe'}
+
+
+def get_foreground_process_name():
+    """Best-effort executable name (e.g. 'soffice.bin') of whatever window
+    currently has OS focus. Windows-only; returns None on any failure or on
+    other platforms."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import win32gui
+        import win32process
+        import win32api
+        import win32con
+        hwnd = win32gui.GetForegroundWindow()
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        handle = win32api.OpenProcess(
+            win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ, False, pid)
+        try:
+            path = win32process.GetModuleFileNameEx(handle, 0)
+        finally:
+            win32api.CloseHandle(handle)
+        return os.path.basename(path).lower()
+    except Exception:
+        return None
+
+
+def html_subset_to_rtf(html):
+    """Convert the small HTML subset this app's own converters produce
+    (<p>, <br>, <b>, <i>, <u>, <ol>/<ul>/<li>, plain text) into an RTF body.
+
+    Returns None for anything outside that subset (e.g. <table> markup) --
+    this is not a general HTML->RTF converter, just enough to give word
+    processors an RTF alternative to CF_HTML. RTF is included because
+    LibreOffice Writer's Windows CF_HTML import doesn't reliably respect the
+    StartFragment/EndFragment offsets and can render the raw CF_HTML header
+    as document text; its RTF import doesn't have that failure mode.
+    """
+    if re.search(r'<table', html, re.IGNORECASE):
+        return None
+
+    def esc(s):
+        s = s.replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+        out = []
+        for ch in s:
+            code = ord(ch)
+            out.append(f'\\u{code}?' if code > 127 else ch)
+        return ''.join(out)
+
+    tokens = re.split(r'(<[^>]+>)', html)
+    parts = []
+    list_stack = []   # each entry: ['ol' or 'ul', next_number]
+    for tok in tokens:
+        if not tok:
+            continue
+        m = re.match(r'^<(/?)(\w+)', tok)
+        if not m:
+            parts.append(esc(tok))
+            continue
+        closing, tag = m.group(1) == '/', m.group(2).lower()
+        if tag == 'b':
+            parts.append('\\b0 ' if closing else '\\b ')
+        elif tag == 'i':
+            parts.append('\\i0 ' if closing else '\\i ')
+        elif tag == 'u':
+            parts.append('\\ulnone ' if closing else '\\ul ')
+        elif tag == 'br':
+            parts.append('\\line ')
+        elif tag == 'p':
+            if not closing and parts:
+                parts.append('\\par ')
+        elif tag in ('ol', 'ul'):
+            if not closing:
+                list_stack.append([tag, 1])
+            elif list_stack:
+                list_stack.pop()
+        elif tag == 'li':
+            if not closing and list_stack:
+                kind, n = list_stack[-1]
+                marker = f'{n}. ' if kind == 'ol' else '\\bullet  '
+                parts.append('\\par ' + marker)
+                list_stack[-1][1] += 1
+        # unrecognized tags are ignored (dropped, not escaped as text)
+
+    return ''.join(parts)
 
 
 class SnippetDialog(QDialog):
@@ -1546,6 +1635,28 @@ class SnippetFormDialog(QDialog):
             return label
 
         return QLabel("")
+
+    def keyPressEvent(self, event):
+        """Make Enter/Return submit the form (click Insert) no matter which
+        field has focus. QComboBox and QDateEdit -- used by the 'dropdown'
+        and 'date_picker' field types -- both consume Return internally
+        instead of letting it bubble up to the dialog's default-button
+        mechanism, so insert_btn.setDefault(True) alone doesn't cover them
+        (only plain QLineEdit text fields, wired separately via
+        returnPressed). A snippet with only those field types had no way to
+        submit via Enter at all before this.
+        """
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            focus_widget = self.focusWidget()
+            if isinstance(focus_widget, QComboBox) and focus_widget.view().isVisible():
+                # Combo's own popup is open -- let Enter confirm the
+                # highlighted item and close it, instead of submitting the
+                # whole form out from under it.
+                super().keyPressEvent(event)
+                return
+            self.on_insert()
+            return
+        super().keyPressEvent(event)
 
     def on_insert(self):
         """Collect form values and generate final content"""
@@ -9526,11 +9637,30 @@ class MainWindow(QMainWindow):
 
             def convert_formatting_to_html(text):
                 """Convert markdown-style formatting to HTML"""
-                # Convert bold: **text** -> <b>text</b>
-                text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-                # Convert italic: *text* -> <i>text</i> (but not inside bold tags)
-                text = re.sub(r'(?<![*<])\*([^*]+?)\*(?![*>])', r'<i>\1</i>', text)
-                # <u>text</u> is already HTML, no conversion needed
+                # Convert bold: **text** -> <b>text</b>, wrapped in an outer
+                # <strong> too. Some webmail paste sanitizers (Gmail's,
+                # confirmed by testing) strip legacy presentational tags
+                # like <b>/<i>/<u> -- even with an inline style attribute --
+                # while trusting the modern semantic <strong>/<em> tags. The
+                # inner <b>/<i>/<u> tags are kept unchanged so
+                # html_subset_to_rtf() and plain CF_HTML consumers
+                # (LibreOffice, Word) keep working exactly as before -- they
+                # only look at the innermost tag they recognize, so this
+                # outer wrapper is purely additive/harmless there.
+                text = re.sub(r'\*\*(.+?)\*\*',
+                              r'<strong style="font-weight:bold;"><b style="font-weight:bold;">\1</b></strong>', text)
+                # Convert italic: *text* -> <i>text</i>, likewise wrapped in <em>
+                text = re.sub(r'(?<![*<])\*([^*]+?)\*(?![*>])',
+                              r'<em style="font-style:italic;"><i style="font-style:italic;">\1</i></em>', text)
+                # <u>text</u> is already HTML -- add the inline style and an
+                # outer <span> for the same reason (there's no "modern
+                # semantic" equivalent tag for underline the way strong/em
+                # cover bold/italic, so a styled <span> is the next best
+                # signal for sanitizers that distrust <u> itself).
+                text = re.sub(r'<u>',
+                              '<span style="text-decoration:underline;"><u style="text-decoration:underline;">',
+                              text, flags=re.IGNORECASE)
+                text = re.sub(r'</u>', '</u></span>', text, flags=re.IGNORECASE)
                 # Convert newlines to <br> for proper line breaks
                 text = text.replace('\n', '<br>')
                 return text
@@ -10276,9 +10406,39 @@ class MainWindow(QMainWindow):
                                   .replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"'))
                     plain_text = plain_text.strip('\n')
 
+                    # RTF alternative: LibreOffice Writer's CF_HTML import
+                    # doesn't reliably honor StartFragment/EndFragment and
+                    # can render the raw header as visible text (see
+                    # html_subset_to_rtf's docstring). Offering RTF too lets
+                    # word processors that prefer it sidestep that entirely.
+                    #
+                    # Only do this when the foreground app is a known desktop
+                    # word processor. Browsers (Gmail, Google Docs, etc.) are
+                    # affected the other way: several of them prefer RTF over
+                    # CF_HTML when both are on the clipboard, and their RTF
+                    # parsers are far stricter/more limited than their HTML
+                    # one -- offering RTF unconditionally cost bold/underline
+                    # in Gmail and broke pasting entirely in Google Docs. Stay
+                    # HTML+plain-text-only there, which already works.
+                    rtf_data = None
+                    if get_foreground_process_name() in RTF_PREFERRING_PROCESSES:
+                        rtf_body = html_subset_to_rtf(html_content)
+                        if rtf_body is not None:
+                            rtf_doc = (
+                                r'{\rtf1\ansi\ansicpg1252\deff0\nouicompat'
+                                r'{\fonttbl{\f0\fswiss\fcharset0 Calibri;}}'
+                                '\r\n' r'\viewkind4\uc1\pard\f0\fs22 ' + rtf_body + '}'
+                            )
+                            rtf_data = rtf_doc.encode('ascii', errors='replace')
+
                     win32clipboard.OpenClipboard()
                     win32clipboard.EmptyClipboard()
                     win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, plain_text)
+                    if rtf_data is not None:
+                        win32clipboard.SetClipboardData(
+                            win32clipboard.RegisterClipboardFormat("Rich Text Format"),
+                            rtf_data
+                        )
                     # CF_HTML is a dynamically registered format (not a fixed constant)
                     win32clipboard.SetClipboardData(
                         win32clipboard.RegisterClipboardFormat("HTML Format"),
@@ -10322,10 +10482,19 @@ class MainWindow(QMainWindow):
         if has_bold or has_italic or has_underline:
             # Convert formatting to HTML and paste as rich text
             html_text = text
-            # Convert bold: **text** -> <b>text</b>
-            html_text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', html_text)
-            # Convert italic: *text* -> <i>text</i>
-            html_text = re.sub(r'(?<![*<])\*([^*]+?)\*(?![*>])', r'<i>\1</i>', html_text)
+            # Convert bold: **text** -> <b>text</b>, wrapped in an outer
+            # <strong> too (see convert_formatting_to_html's comment for why).
+            html_text = re.sub(r'\*\*(.+?)\*\*',
+                                r'<strong style="font-weight:bold;"><b style="font-weight:bold;">\1</b></strong>', html_text)
+            # Convert italic: *text* -> <i>text</i>, likewise wrapped in <em>
+            html_text = re.sub(r'(?<![*<])\*([^*]+?)\*(?![*>])',
+                                r'<em style="font-style:italic;"><i style="font-style:italic;">\1</i></em>', html_text)
+            # <u>text</u> is already HTML -- add the inline style and an
+            # outer <span> too (see convert_formatting_to_html's comment).
+            html_text = re.sub(r'<u>',
+                                '<span style="text-decoration:underline;"><u style="text-decoration:underline;">',
+                                html_text, flags=re.IGNORECASE)
+            html_text = re.sub(r'</u>', '</u></span>', html_text, flags=re.IGNORECASE)
             # Convert newlines to <br>
             html_text = html_text.replace('\n', '<br>')
             self.paste_html(html_text)
