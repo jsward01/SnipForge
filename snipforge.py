@@ -37,7 +37,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QStackedWidget, QTreeWidget, QTreeWidgetItem, QAbstractItemView,
                              QCalendarWidget, QDialogButtonBox, QScrollArea, QFrame,
                              QSizePolicy, QDateEdit, QTabWidget, QSpinBox, QGroupBox,
-                             QGridLayout)
+                             QGridLayout, QStyleFactory)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QSharedMemory, QDate, QEvent, QObject
 from PyQt5.QtGui import QIcon, QColor, QPixmap, QPainter, QPolygonF, QImage, QClipboard, QFont, QFontDatabase, QSyntaxHighlighter, QTextCharFormat
 from pynput import keyboard
@@ -1316,7 +1316,27 @@ class SnippetFormDialog(QDialog):
                     background-color: white;
                     color: #333333;
                 }
+                QCalendarWidget QWidget#qt_calendar_navigationbar {
+                    background-color: #E3F2FD;
+                }
+                QCalendarWidget QAbstractItemView:enabled {
+                    background-color: white;
+                    color: #333333;
+                    selection-background-color: #FFB300;
+                    selection-color: #333333;
+                }
+                QCalendarWidget QAbstractItemView:disabled {
+                    color: #BBBBBB;
+                }
             """)
+            if IS_WINDOWS:
+                # Windows' native style only partially respects QCalendarWidget
+                # stylesheets (parts of the day grid/header keep native colors,
+                # producing a mismatched, hard-to-read result). Fusion respects
+                # the stylesheet fully. Linux/X11 is unaffected either way.
+                popup_calendar = date_edit.calendarWidget()
+                if popup_calendar:
+                    popup_calendar.setStyle(QStyleFactory.create('Fusion'))
             self.form_fields[field_id] = {'type': field_type, 'widget': date_edit, 'match': full_match, 'name': name}
             return date_edit
 
@@ -2672,12 +2692,12 @@ class SnippetEditorWidget(QWidget):
         preview_btn.setMinimumWidth(100)
         preview_btn.setStyleSheet("""
             QPushButton {
-                background-color: transparent;
+                background-color: #1A2A3A;
                 color: #4A90D9;
                 border: 2px solid #4A90D9;
             }
             QPushButton:hover {
-                background-color: #1A2A3A;
+                background-color: #234258;
             }
             QPushButton:pressed {
                 background-color: #0A1A2A;
@@ -2691,12 +2711,12 @@ class SnippetEditorWidget(QWidget):
         clear_btn.setMinimumWidth(100)
         clear_btn.setStyleSheet("""
             QPushButton {
-                background-color: transparent;
+                background-color: #2A2A2A;
                 color: #B0B0B0;
                 border: 2px solid #616161;
             }
             QPushButton:hover {
-                background-color: #2A2A2A;
+                background-color: #383838;
                 border-color: #9E9E9E;
             }
             QPushButton:pressed {
@@ -4711,6 +4731,12 @@ class SnippetEditorWidget(QWidget):
 
         calendar = QCalendarWidget()
         calendar.setGridVisible(True)
+        if IS_WINDOWS:
+            # Windows' native style only partially respects QCalendarWidget
+            # stylesheets (parts of the day grid/header keep native colors,
+            # producing a mismatched, hard-to-read result). Fusion respects
+            # the stylesheet fully. Linux/X11 is unaffected either way.
+            calendar.setStyle(QStyleFactory.create('Fusion'))
         layout.addWidget(calendar)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -6051,13 +6077,23 @@ class SettingsDialog(QDialog):
         # Background Image section
         bg_group = QGroupBox("Background")
         bg_layout = QVBoxLayout(bg_group)
+        bg_layout.setSpacing(10)
+        bg_layout.setContentsMargins(12, 16, 12, 12)
+
+        # Shared label width so the "Custom image:"/"Light mode image:"/"Opacity:"
+        # rows line up into columns instead of each row starting at a different
+        # x position (the ragged look this was reported as "spacing issues").
+        bg_label_width = QLabel("Light mode image:").sizeHint().width()
 
         self.show_background_cb = QCheckBox("Show background image")
         self.show_background_cb.setChecked(self.settings.get('show_background', True))
         bg_layout.addWidget(self.show_background_cb)
 
         bg_path_layout = QHBoxLayout()
-        bg_path_layout.addWidget(QLabel("Custom image:"))
+        bg_path_layout.setSpacing(8)
+        bg_path_label = QLabel("Custom image:")
+        bg_path_label.setMinimumWidth(bg_label_width)
+        bg_path_layout.addWidget(bg_path_label)
         self.bg_path_edit = QLineEdit()
         self.bg_path_edit.setPlaceholderText("Default (background.png)")
         self.bg_path_edit.setText(self.settings.get('custom_background', ''))
@@ -6079,7 +6115,10 @@ class SettingsDialog(QDialog):
 
         # Light mode background
         bg_light_layout = QHBoxLayout()
-        bg_light_layout.addWidget(QLabel("Light mode image:"))
+        bg_light_layout.setSpacing(8)
+        bg_light_label = QLabel("Light mode image:")
+        bg_light_label.setMinimumWidth(bg_label_width)
+        bg_light_layout.addWidget(bg_light_label)
         self.bg_light_path_edit = QLineEdit()
         self.bg_light_path_edit.setPlaceholderText("Default (background_light.png)")
         self.bg_light_path_edit.setText(self.settings.get('custom_background_light', ''))
@@ -6101,7 +6140,10 @@ class SettingsDialog(QDialog):
 
         # Background opacity
         opacity_layout = QHBoxLayout()
-        opacity_layout.addWidget(QLabel("Opacity:"))
+        opacity_layout.setSpacing(8)
+        opacity_label = QLabel("Opacity:")
+        opacity_label.setMinimumWidth(bg_label_width)
+        opacity_layout.addWidget(opacity_label)
         self.bg_opacity_combo = QComboBox()
         self.bg_opacity_combo.addItems(['0%', '25%', '50%', '75%', '100%'])
         current_opacity = self.settings.get('background_opacity', '50%')
