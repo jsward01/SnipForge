@@ -35,8 +35,14 @@ groups | grep input
 ```bash
 git clone https://github.com/jsward01/SnipForge.git
 cd SnipForge
+git checkout windows
 python install.py install
 ```
+
+**Important:** The `git checkout windows` step is required. The default branch
+(`main`) tracks the Linux release only — Windows-specific fixes and features (calendar
+styling, clipboard handling, tray notifications, and more) live on the `windows` branch
+and won't be present if you skip this step.
 
 ## Usage
 
