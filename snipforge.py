@@ -13,7 +13,7 @@ Install (Linux):
     # Then log out and back in
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
 import json
@@ -7391,9 +7391,9 @@ class MainWindow(QMainWindow):
         
         # Create tray menu
         tray_menu = QMenu()
-        show_action = QAction("Show Window", self)
+        show_action = QAction("Open SnipForge", self)
         show_action.triggered.connect(self.show)
-        quit_action = QAction("Quit", self)
+        quit_action = QAction("Quit SnipForge", self)
         quit_action.triggered.connect(self.quit_application)
         
         tray_menu.addAction(show_action)
@@ -10061,6 +10061,15 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setDesktopFileName("snipforge")  # Match StartupWMClass in .desktop file
+    # Desktop notification daemons (GNOME/KDE) show an app-name badge on tray
+    # notifications derived from applicationName()/applicationDisplayName(),
+    # not from the title string passed to showMessage() -- without these set,
+    # some daemons fall back to the interpreter's own name ("Python") since
+    # the app is launched via `python3 snipforge.py` rather than a compiled
+    # binary. setDesktopFileName() alone doesn't cover this; it's for
+    # window-manager class matching.
+    app.setApplicationName("SnipForge")
+    app.setApplicationDisplayName("SnipForge")
 
     # Configure tooltip styling at application level to avoid compositor transparency
     from PyQt5.QtGui import QPalette, QColor
