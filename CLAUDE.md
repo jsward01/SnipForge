@@ -119,9 +119,15 @@ python snipforge.py
 
 **Status:** Ready for Windows Testing
 
-**Last worked on:** First-run tutorial implementation
+**Last worked on:** Fixed form-popup focus-restore click sending wrong mouse button
 
-**What was done (Feb 2026):**
+**What was done (Sep 2026):**
+- Fixed snippets with `{{fieldname}}` popups (e.g. `.ndc1`, `.ndc2`, `.mileage`, `.date`, `:test`) failing to paste into web apps (found via NextDoor/Brave):
+  - Root cause: after the form popup closes, the code that clicks back into the target field to restore focus was sending ydotool button code `0xC1` (a right-click) despite being commented `# Left click`. This opened a context menu instead of focusing the field, so the paste had nowhere to go.
+  - Fixed to `0xC0` (actual left click)
+  - Added a guard to skip the refocus click entirely when the saved cursor position is `(0,0)`, since `QCursor.pos()` can fall back to that under Wayland/KDE, which was causing the click to land on browser chrome (e.g. the tab strip) instead of the target text field
+
+**Previous work (Feb 2026):**
 - Added first-run tutorial wizard:
   - New `TutorialDialog` class - 4-step wizard to onboard new users
   - Step 1 (Welcome): Explains tray icon location and basic concept
