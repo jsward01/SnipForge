@@ -9244,11 +9244,16 @@ class MainWindow(QMainWindow):
                     self.hide()
 
                     # Move mouse back to original position and click to restore focus
-                    time.sleep(0.1)
-                    run_ydotool('mousemove', '--absolute', '-x', str(saved_mouse_pos.x()), '-y', str(saved_mouse_pos.y()))
-                    time.sleep(0.05)
-                    run_ydotool('click', '0xC1')  # Left click
-                    time.sleep(0.15)
+                    # Skip if the saved position looks invalid (e.g. QCursor.pos() falling back
+                    # to 0,0 under Wayland), since clicking there hits window chrome, not the target field
+                    if saved_mouse_pos.x() > 0 or saved_mouse_pos.y() > 0:
+                        time.sleep(0.1)
+                        run_ydotool('mousemove', '--absolute', '-x', str(saved_mouse_pos.x()), '-y', str(saved_mouse_pos.y()))
+                        time.sleep(0.05)
+                        run_ydotool('click', '0xC0')  # Left click
+                        time.sleep(0.15)
+                    else:
+                        print("Skipping focus-restore click: saved mouse position looks invalid (0,0)")
                 else:
                     print("Form dialog cancelled")
                     return
