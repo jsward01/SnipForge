@@ -174,6 +174,29 @@ class ToolTipFilter(QObject):
         return False  # Let other events pass through
 
 
+class DialogRepaintFilter(QObject):
+    """Force freshly shown dialogs to repaint.
+
+    On KDE Wayland, Qt5 dialogs sometimes show up see-through: the first full
+    frame never reaches the compositor, so only small updates (like the blinking
+    text cursor) appear. Repainting a few times after show fixes it.
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show and isinstance(obj, QDialog) and obj.isWindow():
+            for delay in (0, 50, 200):
+                QTimer.singleShot(delay, lambda d=obj: self._repaint(d))
+        return False
+
+    @staticmethod
+    def _repaint(dialog):
+        try:
+            if dialog.isVisible():
+                dialog.repaint()
+        except RuntimeError:
+            pass  # Dialog was already deleted
+
+
 # Cross-platform keyboard controller (pynput)
 _keyboard_controller = None
 
@@ -4666,51 +4689,69 @@ class SnippetEditorWidget(QWidget):
         dialog.setWindowTitle("Select Date")
         dialog.setMinimumSize(350, 300)
         dialog.setAttribute(Qt.WA_TranslucentBackground, False)
+        if self.is_light_theme:
+            c = dict(bg='#F5F5F5', view='#FFFFFF', text='#212121', nav='#E0E0E0',
+                     hover='#D0D0D0', border='#BDBDBD', disabled='#BDBDBD')
+        else:
+            c = dict(bg='#121212', view='#1E1E1E', text='#E0E0E0', nav='#2A2A2A',
+                     hover='#3A3A3A', border='#424242', disabled='#555555')
         dialog.setStyleSheet("""
-            QDialog {
-                background-color: #121212;
-            }
-            QCalendarWidget {
-                background-color: #1E1E1E;
-                color: #E0E0E0;
-            }
-            QCalendarWidget QToolButton {
-                color: #E0E0E0;
-                background-color: #2A2A2A;
+            QDialog {{
+                background-color: {bg};
+            }}
+            QCalendarWidget {{
+                background-color: {view};
+                color: {text};
+            }}
+            QCalendarWidget QToolButton {{
+                color: {text};
+                background-color: {nav};
                 border: none;
                 border-radius: 4px;
                 padding: 4px 8px;
-            }
-            QCalendarWidget QToolButton:hover {
-                background-color: #3A3A3A;
-            }
-            QCalendarWidget QMenu {
-                background-color: #1E1E1E;
-                color: #E0E0E0;
-            }
-            QCalendarWidget QSpinBox {
-                background-color: #2A2A2A;
-                color: #E0E0E0;
-                border: 1px solid #424242;
-            }
-            QCalendarWidget QWidget#qt_calendar_navigationbar {
-                background-color: #2A2A2A;
-            }
-            QCalendarWidget QAbstractItemView:enabled {
-                background-color: #1E1E1E;
-                color: #E0E0E0;
+            }}
+            QCalendarWidget QToolButton#qt_calendar_prevmonth,
+            QCalendarWidget QToolButton#qt_calendar_nextmonth {{
+                font-size: 18px;
+                font-weight: bold;
+            }}
+            QCalendarWidget QToolButton:hover {{
+                background-color: {hover};
+            }}
+            QCalendarWidget QMenu {{
+                background-color: {view};
+                color: {text};
+            }}
+            QCalendarWidget QSpinBox {{
+                background-color: {nav};
+                color: {text};
+                border: 1px solid {border};
+            }}
+            QCalendarWidget QWidget#qt_calendar_navigationbar {{
+                background-color: {nav};
+            }}
+            QCalendarWidget QAbstractItemView:enabled {{
+                background-color: {view};
+                alternate-background-color: {nav};
+                color: {text};
                 selection-background-color: #FF6B00;
                 selection-color: white;
-            }
-            QCalendarWidget QAbstractItemView:disabled {
-                color: #555555;
-            }
-        """)
+            }}
+            QCalendarWidget QAbstractItemView:disabled {{
+                color: {disabled};
+            }}
+        """.format(**c))
 
         layout = QVBoxLayout(dialog)
 
         calendar = QCalendarWidget()
         calendar.setGridVisible(True)
+        # Month arrows are system-theme icons; use text so they follow our theme
+        for name, arrow in (('qt_calendar_prevmonth', '‹'), ('qt_calendar_nextmonth', '›')):
+            btn = calendar.findChild(QWidget, name)
+            if btn:
+                btn.setIcon(QIcon())
+                btn.setText(arrow)
         layout.addWidget(calendar)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -10098,6 +10139,10 @@ def main():
     # Install custom tooltip filter for widgets with tooltips
     tooltip_filter = ToolTipFilter()
     app.installEventFilter(tooltip_filter)
+
+    # Work around see-through dialogs on Wayland
+    dialog_repaint_filter = DialogRepaintFilter()
+    app.installEventFilter(dialog_repaint_filter)
 
     # Set application-wide icon (required for Linux window managers)
     config_dir = get_config_dir()
