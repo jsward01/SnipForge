@@ -119,9 +119,24 @@ python snipforge.py
 
 **Status:** Ready for Windows Testing
 
-**Last worked on:** Fixed form-popup focus-restore click sending wrong mouse button
+**Last worked on:** Fixed see-through pop-ups on Wayland and light-mode theming in the snippet editor
 
-**What was done (Sep 2026):**
+**What was done (Oct 2026):**
+- Fixed see-through pop-up dialogs on KDE Wayland (every Dynamic Commands button, Emoji, Find, etc.):
+  - Symptom: dialogs opened transparent, with only the focused text box and its blinking cursor drawn
+  - Root cause: Qt painted the dialog correctly (`dialog.grab()` looked fine), but the first full frame never reached the compositor; only small partial updates did. Taking a screenshot forced a redraw, which is why screenshots never captured the bug.
+  - Fix: `DialogRepaintFilter`, an app-wide event filter installed in `main()` that repaints every `QDialog` at 0/50/200 ms after it shows. It only covers `QDialog`s, so any new pop-up window should be a `QDialog`.
+- Made the Select Date calendar (`show_calendar_dialog()`) follow light/dark mode:
+  - The stylesheet colors were hard-coded dark; they now come from a light/dark color dict
+  - The weekday header and week-number column use `alternate-background-color` (setting the palette doesn't work because the stylesheet overrides it)
+  - The month arrows were system-theme icons that were nearly invisible in light mode; they're now text arrows (`‹` `›`)
+- Made the Snippet Preview dialog follow light/dark mode:
+  - New `_preview_colors()` helper used for the dialog background, text, trigger chip, content box, and toggle/multi-select checkboxes
+  - The colored field badges are unchanged; their pastel colors work on both backgrounds
+- Added light-mode styles for the editor's bottom Back, Preview, and Clear Form buttons:
+  - Now stored as `bottom_back_btn`, `preview_btn`, `clear_btn` with `*_style_dark` / `*_style_light`, switched in `update_theme()` alongside Save
+
+**Previous work (Sep 2026):**
 - Fixed snippets with `{{fieldname}}` popups (e.g. `.ndc1`, `.ndc2`, `.mileage`, `.date`, `:test`) failing to paste into web apps (found via NextDoor/Brave):
   - Root cause: after the form popup closes, the code that clicks back into the target field to restore focus was sending ydotool button code `0xC1` (a right-click) despite being commented `# Left click`. This opened a context menu instead of focusing the field, so the paste had nowhere to go.
   - Fixed to `0xC0` (actual left click)

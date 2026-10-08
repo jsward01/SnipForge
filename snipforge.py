@@ -2670,10 +2670,10 @@ class SnippetEditorWidget(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(12)
 
-        back_btn = QPushButton("Back")
-        back_btn.clicked.connect(self.on_cancel)
-        back_btn.setMinimumWidth(100)
-        back_btn.setStyleSheet("""
+        self.bottom_back_btn = QPushButton("Back")
+        self.bottom_back_btn.clicked.connect(self.on_cancel)
+        self.bottom_back_btn.setMinimumWidth(100)
+        self.bottom_back_btn_style_dark = """
             QPushButton {
                 background-color: transparent;
                 color: #B0B0B0;
@@ -2686,14 +2686,29 @@ class SnippetEditorWidget(QWidget):
             QPushButton:pressed {
                 background-color: #1E1E1E;
             }
-        """)
-        button_layout.addWidget(back_btn)
+        """
+        self.bottom_back_btn_style_light = """
+            QPushButton {
+                background-color: transparent;
+                color: #616161;
+                border: 2px solid #BDBDBD;
+            }
+            QPushButton:hover {
+                background-color: #EEEEEE;
+                border-color: #9E9E9E;
+            }
+            QPushButton:pressed {
+                background-color: #E0E0E0;
+            }
+        """
+        self.bottom_back_btn.setStyleSheet(self.bottom_back_btn_style_dark)
+        button_layout.addWidget(self.bottom_back_btn)
         button_layout.addStretch()
 
-        preview_btn = QPushButton("Preview")
-        preview_btn.clicked.connect(self.show_preview)
-        preview_btn.setMinimumWidth(100)
-        preview_btn.setStyleSheet("""
+        self.preview_btn = QPushButton("Preview")
+        self.preview_btn.clicked.connect(self.show_preview)
+        self.preview_btn.setMinimumWidth(100)
+        self.preview_btn_style_dark = """
             QPushButton {
                 background-color: #1A2A3A;
                 color: #4A90D9;
@@ -2705,14 +2720,28 @@ class SnippetEditorWidget(QWidget):
             QPushButton:pressed {
                 background-color: #0A1A2A;
             }
-        """)
-        button_layout.addWidget(preview_btn)
+        """
+        self.preview_btn_style_light = """
+            QPushButton {
+                background-color: #E3F2FD;
+                color: #1565C0;
+                border: 2px solid #4A90D9;
+            }
+            QPushButton:hover {
+                background-color: #BBDEFB;
+            }
+            QPushButton:pressed {
+                background-color: #90CAF9;
+            }
+        """
+        self.preview_btn.setStyleSheet(self.preview_btn_style_dark)
+        button_layout.addWidget(self.preview_btn)
 
-        clear_btn = QPushButton("Clear Form")
-        clear_btn.setToolTip("Clear all fields to start a new snippet")
-        clear_btn.clicked.connect(self.on_clear_form)
-        clear_btn.setMinimumWidth(100)
-        clear_btn.setStyleSheet("""
+        self.clear_btn = QPushButton("Clear Form")
+        self.clear_btn.setToolTip("Clear all fields to start a new snippet")
+        self.clear_btn.clicked.connect(self.on_clear_form)
+        self.clear_btn.setMinimumWidth(100)
+        self.clear_btn_style_dark = """
             QPushButton {
                 background-color: #2A2A2A;
                 color: #B0B0B0;
@@ -2725,8 +2754,23 @@ class SnippetEditorWidget(QWidget):
             QPushButton:pressed {
                 background-color: #1E1E1E;
             }
-        """)
-        button_layout.addWidget(clear_btn)
+        """
+        self.clear_btn_style_light = """
+            QPushButton {
+                background-color: #FFFFFF;
+                color: #424242;
+                border: 2px solid #BDBDBD;
+            }
+            QPushButton:hover {
+                background-color: #EEEEEE;
+                border-color: #9E9E9E;
+            }
+            QPushButton:pressed {
+                background-color: #E0E0E0;
+            }
+        """
+        self.clear_btn.setStyleSheet(self.clear_btn_style_dark)
+        button_layout.addWidget(self.clear_btn)
 
         self.save_btn = QPushButton("Save")
         self.save_btn.clicked.connect(self.on_save)
@@ -3021,6 +3065,9 @@ class SnippetEditorWidget(QWidget):
             # Light mode styles
             self.back_btn.setStyleSheet(self.back_btn_style_light)
             self.save_btn.setStyleSheet(self.save_btn_style_light)
+            self.bottom_back_btn.setStyleSheet(self.bottom_back_btn_style_light)
+            self.preview_btn.setStyleSheet(self.preview_btn_style_light)
+            self.clear_btn.setStyleSheet(self.clear_btn_style_light)
             for btn in self.cmd_buttons:
                 btn.setStyleSheet(self.cmd_btn_style_light)
             for btn in self.format_buttons:
@@ -3042,6 +3089,9 @@ class SnippetEditorWidget(QWidget):
             # Dark mode styles
             self.back_btn.setStyleSheet(self.back_btn_style_dark)
             self.save_btn.setStyleSheet(self.save_btn_style_dark)
+            self.bottom_back_btn.setStyleSheet(self.bottom_back_btn_style_dark)
+            self.preview_btn.setStyleSheet(self.preview_btn_style_dark)
+            self.clear_btn.setStyleSheet(self.clear_btn_style_dark)
             for btn in self.cmd_buttons:
                 btn.setStyleSheet(self.cmd_btn_style_dark)
             for btn in self.format_buttons:
@@ -4985,8 +5035,17 @@ class SnippetEditorWidget(QWidget):
         self.load_snippet()
         self.trigger_input.setFocus()
 
+    def _preview_colors(self):
+        """Theme colors for the snippet preview dialog"""
+        if self.is_light_theme:
+            return dict(bg='#F5F5F5', panel='#FFFFFF', text='#212121', muted='#757575',
+                        chip='#E0E0E0', border='#BDBDBD')
+        return dict(bg='#121212', panel='#1E1E1E', text='#E0E0E0', muted='#757575',
+                    chip='#2A2A2A', border='#333333')
+
     def show_preview(self):
         """Show a preview of the snippet with rendered form fields"""
+        c = self._preview_colors()
         content = self.content_input.toPlainText()
         trigger = self.trigger_input.text()
 
@@ -4995,13 +5054,13 @@ class SnippetEditorWidget(QWidget):
         dialog.setWindowTitle("Snippet Preview")
         dialog.setMinimumSize(600, 400)
         dialog.setAttribute(Qt.WA_TranslucentBackground, False)
-        dialog.setStyleSheet("""
-            QDialog {
-                background-color: #121212;
-            }
-            QLabel {
-                color: #E0E0E0;
-            }
+        dialog.setStyleSheet(f"""
+            QDialog {{
+                background-color: {c['bg']};
+            }}
+            QLabel {{
+                color: {c['text']};
+            }}
         """)
 
         main_layout = QVBoxLayout(dialog)
@@ -5011,16 +5070,16 @@ class SnippetEditorWidget(QWidget):
         # Header with trigger
         header_layout = QHBoxLayout()
         trigger_label = QLabel(f"Trigger: ")
-        trigger_label.setStyleSheet("color: #757575;")
+        trigger_label.setStyleSheet(f"color: {c['muted']};")
         trigger_chip = QLabel(trigger if trigger else "(no trigger)")
-        trigger_chip.setStyleSheet("""
-            QLabel {
-                background-color: #2A2A2A;
+        trigger_chip.setStyleSheet(f"""
+            QLabel {{
+                background-color: {c['chip']};
                 color: #FF6B00;
                 padding: 4px 12px;
                 border-radius: 12px;
                 font-weight: bold;
-            }
+            }}
         """)
         header_layout.addWidget(trigger_label)
         header_layout.addWidget(trigger_chip)
@@ -5030,17 +5089,17 @@ class SnippetEditorWidget(QWidget):
         # Scroll area for preview content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
-            QScrollArea {
-                border: 1px solid #333333;
+        scroll.setStyleSheet(f"""
+            QScrollArea {{
+                border: 1px solid {c['border']};
                 border-radius: 8px;
-                background-color: #1E1E1E;
-            }
+                background-color: {c['panel']};
+            }}
         """)
 
         # Preview content widget
         preview_widget = QWidget()
-        preview_widget.setStyleSheet("background-color: #1E1E1E;")
+        preview_widget.setStyleSheet(f"background-color: {c['panel']};")
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(16, 16, 16, 16)
 
@@ -5113,21 +5172,22 @@ class SnippetEditorWidget(QWidget):
 
             checkbox = QCheckBox(toggle_name)
             checkbox.setChecked(True)
-            checkbox.setStyleSheet("""
-                QCheckBox {
-                    color: #E0E0E0;
+            c = self._preview_colors()
+            checkbox.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {c['text']};
                     font-weight: 500;
-                }
-                QCheckBox::indicator {
+                }}
+                QCheckBox::indicator {{
                     width: 16px;
                     height: 16px;
                     border: 2px solid #4A90D9;
                     border-radius: 3px;
-                    background-color: #1E1E1E;
-                }
-                QCheckBox::indicator:checked {
+                    background-color: {c['panel']};
+                }}
+                QCheckBox::indicator:checked {{
                     background-color: #4A90D9;
-                }
+                }}
             """)
             checkbox_layout.addWidget(checkbox)
             checkbox_layout.addStretch()
@@ -5211,7 +5271,7 @@ class SnippetEditorWidget(QWidget):
                         html_text = convert_formatting_to_html(remaining[:earliest_pos])
                         text_label = QLabel(html_text)
                         text_label.setTextFormat(Qt.RichText)
-                        text_label.setStyleSheet("color: #E0E0E0; background: transparent;")
+                        text_label.setStyleSheet(f"color: {self._preview_colors()['text']}; background: transparent;")
                         line_layout.addWidget(text_label)
 
                     field_widget = self.create_preview_field(match_type, match_groups)
@@ -5224,7 +5284,7 @@ class SnippetEditorWidget(QWidget):
                         html_text = convert_formatting_to_html(remaining)
                         text_label = QLabel(html_text)
                         text_label.setTextFormat(Qt.RichText)
-                        text_label.setStyleSheet("color: #E0E0E0; background: transparent;")
+                        text_label.setStyleSheet(f"color: {self._preview_colors()['text']}; background: transparent;")
                         line_layout.addWidget(text_label)
                     remaining = ""
 
@@ -5306,21 +5366,22 @@ class SnippetEditorWidget(QWidget):
             container_layout.setSpacing(8)
             for opt in options.split('|'):
                 cb = QCheckBox(opt.strip())
-                cb.setStyleSheet("""
-                    QCheckBox {
-                        color: #E0E0E0;
+                c = self._preview_colors()
+                cb.setStyleSheet(f"""
+                    QCheckBox {{
+                        color: {c['text']};
                         spacing: 4px;
-                    }
-                    QCheckBox::indicator {
+                    }}
+                    QCheckBox::indicator {{
                         width: 14px;
                         height: 14px;
                         border: 2px solid #4A90D9;
                         border-radius: 3px;
-                        background-color: #1E1E1E;
-                    }
-                    QCheckBox::indicator:checked {
+                        background-color: {c['panel']};
+                    }}
+                    QCheckBox::indicator:checked {{
                         background-color: #4A90D9;
-                    }
+                    }}
                 """)
                 container_layout.addWidget(cb)
             return container
