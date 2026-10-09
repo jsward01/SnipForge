@@ -125,7 +125,7 @@ python snipforge.py
 - Fixed form-popup snippets (e.g. `.ndc1`) working once per launch, then pasting into the wrong place (found via NextDoor/Brave):
   - Root cause: on Wayland, `QCursor.pos()` returns the last position seen over a SnipForge window, not the real cursor. The first expansion after a launch got `(0,0)` and skipped the refocus click (works). After the mouse had touched a popup, later expansions clicked that stale spot on the page, stealing focus from the text field.
   - Fix: skip the refocus click entirely when `QApplication.platformName() == 'wayland'`. KDE returns focus to the target window on its own; X11/Windows behavior is unchanged.
-  - Added `Environment=PYTHONUNBUFFERED=1` to `~/.config/systemd/user/snipforge.service` so `journalctl --user -u snipforge` shows log lines live (not in `install.py` yet)
+  - Live logging on the dev machine only: `~/.config/systemd/user/snipforge.service.d/debug-logging.conf` sets `PYTHONUNBUFFERED=1` so `journalctl --user -u snipforge -f` shows log lines as they happen. Intentionally not part of `install.py`. `install.py` rewrites/deletes only the main `.service` file, so the drop-in survives updates and uninstalls.
 - Fixed see-through pop-up dialogs on KDE Wayland (every Dynamic Commands button, Emoji, Find, etc.):
   - Symptom: dialogs opened transparent, with only the focused text box and its blinking cursor drawn
   - Root cause: Qt painted the dialog correctly (`dialog.grab()` looked fine), but the first full frame never reached the compositor; only small partial updates did. Taking a screenshot forced a redraw, which is why screenshots never captured the bug.
