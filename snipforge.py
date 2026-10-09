@@ -9345,10 +9345,14 @@ class MainWindow(QMainWindow):
                     # Ensure SnipForge main window is hidden
                     self.hide()
 
-                    # Move mouse back to original position and click to restore focus
-                    # Skip if the saved position looks invalid (e.g. QCursor.pos() falling back
-                    # to 0,0 under Wayland), since clicking there hits window chrome, not the target field
-                    if saved_mouse_pos.x() > 0 or saved_mouse_pos.y() > 0:
+                    # Move mouse back to original position and click to restore focus.
+                    # Skip on Wayland: QCursor.pos() there is only the last position seen over a
+                    # SnipForge window (e.g. where the previous popup's Insert button was), so the
+                    # click lands on a stale spot and steals focus. The compositor restores focus itself.
+                    # Also skip if the saved position looks invalid (0,0), which hits window chrome.
+                    if QApplication.platformName() == 'wayland':
+                        print("Skipping focus-restore click: cursor position is unreliable on Wayland")
+                    elif saved_mouse_pos.x() > 0 or saved_mouse_pos.y() > 0:
                         time.sleep(0.1)
                         run_ydotool('mousemove', '--absolute', '-x', str(saved_mouse_pos.x()), '-y', str(saved_mouse_pos.y()))
                         time.sleep(0.05)
